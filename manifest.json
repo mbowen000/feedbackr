@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "AI Feedback Loop",
+  "version": "1.1.0",
+  "description": "Drop persistent feedback pins on any web page or prototype and export concise, context-rich prompts for AI coding agents.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Toggle AI Feedback Loop (Alt+Shift+F)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "toggle-feedback-loop": {
+      "suggested_key": {
+        "default": "Alt+Shift+F",
+        "mac": "Command+Shift+F"
+      },
+      "description": "Toggle AI Feedback Loop floating controls"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "content/storage.js",
+        "content/promptGenerator.js",
+        "content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/styles.css"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
+

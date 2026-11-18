@@ -1,0 +1,1007 @@
+/* AI Feedback Loop — Shadow DOM Styles */
+:host {
+  all: initial;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  color: #f8fafc;
+  line-height: 1.45;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+/* Overlay Layer */
+.aifl-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2147483640;
+  overflow: visible;
+}
+
+/* Hover Inspector Box when in Add Comment Mode */
+.aifl-hover-box {
+  position: fixed;
+  pointer-events: none;
+  border: 2px solid #6366f1;
+  background: rgba(99, 102, 241, 0.10);
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25), 0 8px 24px rgba(99, 102, 241, 0.22);
+  transition: top 0.04s linear, left 0.04s linear, width 0.04s linear, height 0.04s linear;
+  z-index: 2147483641;
+  display: none;
+}
+
+.aifl-hover-box.visible {
+  display: block;
+}
+
+.aifl-hover-label {
+  position: absolute;
+  top: -28px;
+  left: -2px;
+  background: #4f46e5;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.01em;
+}
+
+.aifl-hover-label .aifl-hover-hint {
+  opacity: 0.8;
+  font-weight: 400;
+}
+
+/* Free-Drop Dangling Pin Cursor (when holding Ctrl in drop-pin mode) */
+.aifl-free-cursor {
+  position: fixed;
+  pointer-events: none;
+  z-index: 2147483645;
+  display: none;
+  transform: translate(0, 0);
+}
+
+.aifl-free-cursor.visible {
+  display: block;
+}
+
+.aifl-dangling-pin {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 32px;
+  height: 32px;
+  margin-left: -16px;
+  margin-top: -36px;
+  border-radius: 50% 50% 50% 5px;
+  transform: rotate(-45deg);
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  border: 2px solid #ffffff;
+  box-shadow: 0 10px 22px rgba(2, 6, 23, 0.55), 0 0 0 2px rgba(16, 185, 129, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: aifl-dangle-sway 1.4s ease-in-out infinite;
+}
+
+.aifl-dangling-pin span {
+  transform: rotate(45deg);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.aifl-dangling-shadow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 12px;
+  height: 5px;
+  margin-left: -6px;
+  margin-top: -2px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.75);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.9);
+}
+
+@keyframes aifl-dangle-sway {
+  0%, 100% {
+    transform: rotate(-48deg) translateY(-2px);
+  }
+  50% {
+    transform: rotate(-42deg) translateY(0px);
+  }
+}
+
+.aifl-free-label {
+  position: absolute;
+  left: 20px;
+  top: -30px;
+  background: rgba(15, 23, 42, 0.94);
+  border: 1px solid rgba(16, 185, 129, 0.55);
+  color: #ecfdf5;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 6px;
+  white-space: nowrap;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.38);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aifl-free-label .aifl-hover-hint {
+  color: #6ee7b7;
+  font-weight: 400;
+}
+
+/* Active Target Highlight Box (when focusing a comment from drawer/pin) */
+.aifl-focus-box {
+  position: fixed;
+  pointer-events: none;
+  border: 2px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.14);
+  border-radius: 6px;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.28);
+  z-index: 2147483641;
+  display: none;
+  transition: all 0.15s ease-out;
+}
+
+.aifl-focus-box.visible {
+  display: block;
+  animation: aifl-pulse-ring 1.4s ease-out infinite;
+}
+
+@keyframes aifl-pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(245, 158, 11, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
+}
+
+/* Pin Bubbles on Page */
+.aifl-pins-container {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2147483642;
+}
+
+.aifl-pin {
+  position: fixed;
+  width: 32px;
+  height: 32px;
+  margin-left: -16px;
+  margin-top: -16px;
+  border-radius: 50% 50% 50% 5px;
+  transform: rotate(-45deg);
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.45), 0 0 0 1px rgba(99, 102, 241, 0.4);
+  cursor: grab;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), background 0.15s ease, box-shadow 0.15s ease;
+  user-select: none;
+}
+
+.aifl-pin.free-pin {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.45), 0 0 0 1px rgba(16, 185, 129, 0.45);
+}
+
+.aifl-pin.dragging {
+  cursor: grabbing;
+  transition: none;
+  transform: rotate(-45deg) scale(1.22);
+  z-index: 2147483647;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.65), 0 0 0 3px rgba(99, 102, 241, 0.55);
+}
+
+.aifl-pin span.aifl-pin-num {
+  transform: rotate(45deg);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* Mini 3-dot gripper on bottom-right of the chat bubble */
+.aifl-pin-gripper {
+  position: absolute;
+  right: -5px;
+  bottom: 5px;
+  transform: rotate(45deg);
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 999px;
+  padding: 1.5px 3.5px;
+  display: flex;
+  align-items: center;
+   gap: 1.5px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+  cursor: grab;
+  opacity: 0.88;
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.aifl-pin:hover .aifl-pin-gripper {
+  opacity: 1;
+  background: #312e81;
+  border-color: #a5b4fc;
+  transform: rotate(45deg) scale(1.1);
+}
+
+.aifl-pin-gripper i {
+  display: block;
+  width: 2.5px;
+  height: 2.5px;
+  border-radius: 50%;
+  background: #e2e8f0;
+}
+
+.aifl-pin:hover {
+  transform: rotate(-45deg) scale(1.14);
+  z-index: 2147483645;
+  box-shadow: 0 6px 20px rgba(79, 70, 229, 0.65), 0 0 0 2px rgba(255, 255, 255, 0.9);
+}
+
+.aifl-pin.active {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  transform: rotate(-45deg) scale(1.18);
+  z-index: 2147483645;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.35), 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+/* Pin Hover Tooltip */
+.aifl-pin-tooltip {
+  position: absolute;
+  left: 36px;
+  top: -6px;
+  transform: rotate(45deg);
+  transform-origin: top left;
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #f8fafc;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.aifl-pin:hover .aifl-pin-tooltip {
+  opacity: 1;
+}
+
+.aifl-pin.dragging .aifl-pin-tooltip {
+  opacity: 0;
+}
+
+/* Floating Comment Prompt Popover (create or edit a pin, freely movable) */
+.aifl-popover {
+  position: fixed;
+  width: 340px;
+  background: rgba(15, 23, 42, 0.97);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 14px;
+  padding: 12px 14px 14px 12px;
+  box-shadow: 0 20px 44px rgba(2, 6, 23, 0.7), 0 0 0 1px rgba(99, 102, 241, 0.28);
+  pointer-events: auto;
+  z-index: 2147483646;
+  display: none;
+  animation: aifl-pop-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+
+.aifl-popover.visible {
+  display: block;
+}
+
+.aifl-popover.dragging {
+  box-shadow: 0 26px 56px rgba(2, 6, 23, 0.85), 0 0 0 2px rgba(99, 102, 241, 0.55);
+}
+
+@keyframes aifl-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.aifl-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  gap: 8px;
+  cursor: grab;
+  padding: 2px 0;
+}
+
+.aifl-popover-header:active {
+  cursor: grabbing;
+}
+
+.aifl-popover-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aifl-popover-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+  background: #4f46e5;
+  padding: 1px 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.aifl-popover-target {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.16);
+  padding: 2px 7px;
+  border-radius: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 210px;
+}
+
+.aifl-popover-close {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.aifl-popover-close:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.aifl-popover-textarea {
+  width: 100%;
+  min-height: 76px;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  color: #f8fafc;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  resize: none;
+  outline: none;
+  margin-bottom: 10px;
+  user-select: text;
+}
+
+.aifl-popover-textarea:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+}
+
+.aifl-popover-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-right: 18px;
+}
+
+.aifl-popover-hint {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.aifl-popover-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Bottom-Right 3-Dot Gripper Grabhandle */
+.aifl-gripper-br {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 3px;
+  cursor: grab;
+  border-radius: 6px;
+  color: #94a3b8;
+  transition: color 0.14s ease, background 0.14s ease, transform 0.14s ease;
+  user-select: none;
+}
+
+.aifl-gripper-br:hover {
+  color: #f8fafc;
+  background: rgba(99, 102, 241, 0.22);
+  transform: scale(1.08);
+}
+
+.aifl-gripper-br:active {
+  cursor: grabbing;
+  color: #a5b4fc;
+}
+
+.aifl-gripper-br svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+  pointer-events: none;
+}
+
+/* Floating Navigation Control Bar */
+.aifl-toolbar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 999px;
+  padding: 6px 8px 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 16px 40px rgba(2, 6, 23, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  pointer-events: auto;
+  z-index: 2147483646;
+  user-select: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.aifl-toolbar.hidden {
+  display: none;
+}
+
+.aifl-drag-handle {
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-right: 6px;
+  border-right: 1px solid rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: -0.01em;
+}
+
+.aifl-drag-handle:active {
+  cursor: grabbing;
+}
+
+.aifl-brand-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6366f1;
+  box-shadow: 0 0 8px #6366f1;
+}
+
+.aifl-toolbar.inspecting .aifl-brand-dot {
+  background: #22c55e;
+  box-shadow: 0 0 10px #22c55e;
+}
+
+/* Toolbar Buttons */
+.aifl-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: rgba(30, 41, 59, 0.85);
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.14s ease;
+  white-space: nowrap;
+}
+
+.aifl-btn:hover {
+  background: rgba(51, 65, 85, 0.95);
+  color: #ffffff;
+}
+
+.aifl-btn-primary {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
+}
+
+.aifl-btn-primary:hover {
+  background: linear-gradient(135deg, #818cf8 0%, #6366f1 100%);
+}
+
+.aifl-btn-primary.active {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.35), 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+.aifl-btn-danger {
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.aifl-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.28);
+  color: #ffffff;
+}
+
+.aifl-btn-confirm {
+  background: #ef4444;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.aifl-btn-confirm:hover {
+  background: #dc2626;
+}
+
+.aifl-btn-icon {
+  padding: 6px 8px;
+  color: #94a3b8;
+  background: transparent;
+}
+
+.aifl-btn-icon:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.aifl-badge {
+  background: rgba(99, 102, 241, 0.28);
+  color: #c7d2fe;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  min-width: 18px;
+  text-align: center;
+}
+
+/* Right-Hand Slide-Out Drawer */
+.aifl-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 410px;
+  max-width: 92vw;
+  height: 100vh;
+  background: rgba(15, 23, 42, 0.97);
+  backdrop-filter: blur(20px);
+  border-left: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: -16px 0 48px rgba(2, 6, 23, 0.65);
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  z-index: 2147483647;
+  transform: translateX(104%);
+  transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.aifl-drawer.open {
+  transform: translateX(0);
+}
+
+.aifl-drawer-header {
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: rgba(2, 6, 23, 0.35);
+}
+
+.aifl-drawer-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.aifl-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin: 0;
+}
+
+.aifl-drawer-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Scope Filter Tabs (All Screens vs Current Screen) */
+.aifl-tabs {
+  display: inline-flex;
+  background: rgba(30, 41, 59, 0.9);
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.aifl-tab {
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.aifl-tab.active {
+  background: #4f46e5;
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.35);
+}
+
+/* Drawer Body / Comment Cards */
+.aifl-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.aifl-empty-state {
+  text-align: center;
+  padding: 48px 20px;
+  color: #94a3b8;
+}
+
+.aifl-empty-icon {
+  font-size: 28px;
+  margin-bottom: 10px;
+  opacity: 0.7;
+}
+
+.aifl-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin-bottom: 6px;
+}
+
+.aifl-empty-desc {
+  font-size: 12px;
+  color: #64748b;
+  max-width: 260px;
+  margin: 0 auto 16px;
+}
+
+/* Comment Card */
+.aifl-card {
+  background: rgba(30, 41, 59, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  padding: 12px;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.aifl-card:hover {
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.aifl-card.focused {
+  border-color: #f59e0b;
+  background: rgba(30, 41, 59, 0.92);
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25), 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.aifl-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.aifl-card-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.aifl-pin-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #4f46e5;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.aifl-card.focused .aifl-pin-badge {
+  background: #f59e0b;
+  color: #0f172a;
+}
+
+.aifl-screen-pill {
+  font-size: 11px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  padding: 2px 7px;
+  border-radius: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aifl-status-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.aifl-status-pill.hidden-el {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.aifl-status-pill.other-screen {
+  background: rgba(56, 189, 248, 0.15);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.aifl-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.aifl-icon-btn {
+  border: none;
+  background: rgba(15, 23, 42, 0.55);
+  color: #94a3b8;
+  font-size: 11px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.aifl-icon-btn:hover {
+  background: rgba(99, 102, 241, 0.25);
+  color: #ffffff;
+}
+
+.aifl-icon-btn.delete:hover {
+  background: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+}
+
+.aifl-card-textarea {
+  width: 100%;
+  min-height: 54px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  color: #f8fafc;
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 7px 9px;
+  resize: vertical;
+  outline: none;
+  margin-bottom: 8px;
+}
+
+.aifl-card-textarea:focus {
+  border-color: #6366f1;
+  background: rgba(15, 23, 42, 0.95);
+}
+
+/* Target Details Box inside Card */
+.aifl-meta-box {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: #94a3b8;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aifl-meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.aifl-meta-key {
+  color: #64748b;
+  font-weight: 600;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+  min-width: 58px;
+}
+
+.aifl-meta-val {
+  color: #cbd5e1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aifl-meta-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: #a5b4fc;
+}
+
+/* Prompt Preview Accordion in Drawer Footer */
+.aifl-drawer-footer {
+  padding: 12px 16px 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aifl-preview-details {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.aifl-preview-summary {
+  padding: 7px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #cbd5e1;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.aifl-preview-summary:hover {
+  color: #ffffff;
+}
+
+.aifl-preview-pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: #cbd5e1;
+  max-height: 170px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(2, 6, 23, 0.65);
+}
+
+.aifl-footer-primary-row {
+  display: flex;
+  gap: 8px;
+}
+
+.aifl-footer-primary-row .aifl-btn-primary {
+  flex: 1;
+  justify-content: center;
+  padding: 9px 14px;
+  font-size: 13px;
+  border-radius: 9px;
+}
+
+.aifl-footer-secondary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Toast Notification */
+.aifl-toast {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  color: #f8fafc;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 2147483647;
+}
+
+.aifl-toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
