@@ -38,6 +38,7 @@
     pendingPin: null, // { mode, element, context, clientX, clientY, commentId }
     filterScope: 'all', // 'all' | 'screen'
     statusFilter: 'all', // 'all' | 'pending' | 'approved' | 'resolved'
+    showResolvedPins: false,
     promptMode: 'standard', // 'standard' | 'compact'
     selectedPinIds: new Set(),
     confirmingClearToolbar: false,
@@ -163,6 +164,14 @@
       'all: initial !important; position: fixed !important; inset: 0 !important; pointer-events: none !important; z-index: 2147483640 !important;';
     shadowRoot = hostEl.attachShadow({ mode: 'open' });
 
+    if (document.head && !document.getElementById('aifl-font-inter')) {
+      const fontLink = document.createElement('link');
+      fontLink.id = 'aifl-font-inter';
+      fontLink.rel = 'stylesheet';
+      fontLink.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap';
+      document.head.appendChild(fontLink);
+    }
+
     const cssText = await loadStylesText();
     if (state.tornDown) return;
 
@@ -276,6 +285,11 @@
         <button class="aifl-btn" id="aifl-btn-drawer" title="Open comments drawer">
           <span>Inbox</span>
           <span class="aifl-badge" id="aifl-toolbar-count">0</span>
+        </button>
+
+        <button class="aifl-btn aifl-btn-toggle" id="aifl-btn-show-resolved" title="Show or hide resolved pins on the page" aria-pressed="false">
+          <span class="aifl-toggle-dot"></span>
+          <span>Show Resolved Pins</span>
         </button>
 
         <button class="aifl-btn" id="aifl-btn-copy" title="Copy visible comments as an AI prompt">
@@ -413,6 +427,7 @@
       btnAddLabel: shadowRoot.getElementById('aifl-btn-add-label'),
       btnDrawer: shadowRoot.getElementById('aifl-btn-drawer'),
       toolbarCount: shadowRoot.getElementById('aifl-toolbar-count'),
+      btnShowResolved: shadowRoot.getElementById('aifl-btn-show-resolved'),
       btnCopy: shadowRoot.getElementById('aifl-btn-copy'),
       btnCopyLabel: shadowRoot.getElementById('aifl-btn-copy-label'),
       btnClear: shadowRoot.getElementById('aifl-btn-clear'),
@@ -527,6 +542,14 @@
     // Toggle Drawer button
     ui.btnDrawer.addEventListener('click', () => {
       setDrawerOpen(!state.drawerOpen);
+    });
+
+    // Toggle Show Resolved Pins button
+    ui.btnShowResolved.addEventListener('click', () => {
+      state.showResolvedPins = !state.showResolvedPins;
+      ui.btnShowResolved.classList.toggle('active', state.showResolvedPins);
+      ui.btnShowResolved.setAttribute('aria-pressed', String(state.showResolvedPins));
+      renderPins();
     });
 
     // Copy Prompt button in toolbar
@@ -1417,7 +1440,11 @@
     }
     ui.pinsContainer.style.display = 'block';
     const currentRoute = window.AIFLStorage.getRouteKey();
-    const routeComments = state.comments.filter((c) => c.screen?.routeKey === currentRoute);
+    const routeComments = state.comments.filter((c) => {
+      if (c.screen?.routeKey !== currentRoute) return false;
+      if (!state.showResolvedPins && (c.status || 'pending') === 'resolved') return false;
+      return true;
+    });
 
     ui.pinsContainer.innerHTML = '';
 
