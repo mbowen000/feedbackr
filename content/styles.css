@@ -1005,3 +1005,540 @@
   transform: translateX(-50%) translateY(0);
 }
 
+/* ============================================================
+ * Live Collaboration v2.0.0 — Cursors, Statuses, Inbox & Threads
+ * ============================================================ */
+
+/* Live Multiplayer Cursors */
+.aifl-cursors-container {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2147483643;
+  overflow: hidden;
+}
+
+.aifl-peer-cursor {
+  position: fixed;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  transform: translate(-2px, -2px);
+  transition: left 0.06s linear, top 0.06s linear, opacity 0.35s ease;
+  will-change: left, top, opacity;
+  opacity: 1;
+}
+
+.aifl-peer-cursor.stale {
+  opacity: 0.25;
+}
+
+.aifl-peer-cursor-arrow {
+  width: 18px;
+  height: 18px;
+  filter: drop-shadow(0 2px 4px rgba(2, 6, 23, 0.55));
+  flex-shrink: 0;
+}
+
+.aifl-peer-cursor-pill {
+  margin-top: 12px;
+  margin-left: -4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(2, 6, 23, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+/* Visual Pin Status Variants */
+.aifl-pin.status-approved {
+  background: linear-gradient(135deg, #6366f1 0%, #4338ca 100%);
+  border-color: #a5b4fc;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.45), 0 6px 18px rgba(79, 70, 229, 0.55);
+}
+
+.aifl-pin.free-pin.status-approved {
+  background: linear-gradient(135deg, #10b981 0%, #047857 100%);
+  border-color: #6ee7b7;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.45), 0 6px 18px rgba(5, 150, 105, 0.55);
+}
+
+.aifl-pin.status-in_progress {
+  background: linear-gradient(135deg, #06b6d4 0%, #0284c7 100%);
+  border-color: #cffafe;
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.45), 0 6px 18px rgba(6, 182, 212, 0.5);
+}
+
+.aifl-pin.status-resolved {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  border-color: rgba(255, 255, 255, 0.75);
+  opacity: 0.62;
+  box-shadow: 0 2px 10px rgba(16, 185, 129, 0.3);
+}
+
+.aifl-pin.status-resolved:hover {
+  opacity: 0.95;
+}
+
+.aifl-pin-check {
+  position: absolute;
+  top: -6px;
+  right: -5px;
+  transform: rotate(45deg);
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #059669;
+  border: 1.5px solid #ffffff;
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+/* Toolbar Live Status Pill & Connect Popover */
+.aifl-live-pill {
+  background: rgba(30, 41, 59, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  padding: 5px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.aifl-live-pill.is-live {
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.14);
+  color: #d1fae5;
+}
+
+.aifl-live-pill.is-connecting {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.14);
+  color: #fef3c7;
+}
+
+.aifl-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+  flex-shrink: 0;
+}
+
+.aifl-live-pill.is-live .aifl-live-dot {
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+}
+
+.aifl-live-pill.is-connecting .aifl-live-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 8px #f59e0b;
+}
+
+.aifl-connect-popover {
+  position: fixed;
+  bottom: 78px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 336px;
+  max-width: calc(100vw - 24px);
+  background: rgba(15, 23, 42, 0.98);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 20px 44px rgba(2, 6, 23, 0.72), 0 0 0 1px rgba(99, 102, 241, 0.22);
+  pointer-events: auto;
+  z-index: 2147483647;
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aifl-connect-popover.visible {
+  display: flex;
+}
+
+.aifl-connect-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.aifl-connect-sub {
+  font-size: 11.5px;
+  color: #94a3b8;
+}
+
+.aifl-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aifl-field-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+}
+
+.aifl-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.aifl-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  color: #f8fafc;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 9px;
+  outline: none;
+}
+
+.aifl-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.22);
+}
+
+.aifl-peers-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.aifl-peer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  font-size: 11px;
+  color: #e2e8f0;
+}
+
+.aifl-peer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Host Review Inbox — Status Filters & Batch Triage */
+.aifl-status-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.aifl-status-tab {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(30, 41, 59, 0.72);
+  color: #94a3b8;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.aifl-status-tab:hover {
+  color: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.32);
+}
+
+.aifl-status-tab.active {
+  background: rgba(99, 102, 241, 0.24);
+  border-color: rgba(99, 102, 241, 0.55);
+  color: #e0e7ff;
+}
+
+.aifl-batch-bar {
+  padding: 8px 14px;
+  background: rgba(15, 23, 42, 0.85);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.aifl-batch-bar.hidden {
+  display: none;
+}
+
+.aifl-batch-left,
+.aifl-batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aifl-btn-sm {
+  padding: 4px 9px;
+  font-size: 11px;
+  border-radius: 7px;
+}
+
+.aifl-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: #6366f1;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: 0;
+}
+
+/* Card Status, Author & Triage Controls */
+.aifl-card.status-resolved {
+  opacity: 0.78;
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+.aifl-card-subrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.aifl-card-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.aifl-status-pill.status-pending {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.aifl-status-pill.status-approved {
+  background: rgba(99, 102, 241, 0.22);
+  color: #c7d2fe;
+  border: 1px solid rgba(99, 102, 241, 0.45);
+}
+
+.aifl-status-pill.status-in_progress {
+  background: rgba(6, 182, 212, 0.18);
+  color: #67e8f9;
+  border: 1px solid rgba(6, 182, 212, 0.4);
+}
+
+.aifl-status-pill.status-resolved {
+  background: rgba(16, 185, 129, 0.18);
+  color: #6ee7b7;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.aifl-author-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+}
+
+.aifl-triage-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.aifl-triage-btn {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.7);
+  color: #cbd5e1;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.aifl-triage-btn.approve {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.45);
+  color: #c7d2fe;
+}
+
+.aifl-triage-btn.approve:hover {
+  background: rgba(99, 102, 241, 0.36);
+  color: #ffffff;
+}
+
+.aifl-triage-btn.resolve {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #6ee7b7;
+}
+
+.aifl-triage-btn.resolve:hover {
+  background: rgba(16, 185, 129, 0.34);
+  color: #ffffff;
+}
+
+.aifl-triage-btn.reopen:hover {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fcd34d;
+}
+
+.aifl-card-textarea[readonly] {
+  opacity: 0.85;
+  cursor: default;
+}
+
+/* Threaded Replies Section */
+.aifl-replies-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aifl-replies-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.aifl-reply-item {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 7px;
+  padding: 6px 8px;
+  font-size: 11.5px;
+}
+
+.aifl-reply-item.role-agent {
+  border-color: rgba(168, 85, 247, 0.35);
+  background: rgba(88, 28, 135, 0.18);
+}
+
+.aifl-reply-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.aifl-reply-author {
+  font-weight: 700;
+  font-size: 11px;
+  color: #e2e8f0;
+}
+
+.aifl-reply-role {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+.aifl-reply-role.host {
+  background: rgba(99, 102, 241, 0.22);
+  color: #c7d2fe;
+}
+
+.aifl-reply-role.guest {
+  background: rgba(16, 185, 129, 0.18);
+  color: #6ee7b7;
+}
+
+.aifl-reply-role.agent {
+  background: rgba(168, 85, 247, 0.25);
+  color: #e9d5ff;
+}
+
+.aifl-reply-text {
+  color: #cbd5e1;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.aifl-reply-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.aifl-reply-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 7px;
+  color: #f8fafc;
+  font-family: inherit;
+  font-size: 11.5px;
+  padding: 5px 8px;
+  outline: none;
+}
+
+.aifl-reply-input:focus {
+  border-color: #6366f1;
+}
+
+.aifl-reply-send {
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  background: rgba(99, 102, 241, 0.24);
+  color: #e0e7ff;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.aifl-reply-send:hover {
+  background: rgba(99, 102, 241, 0.42);
+  color: #ffffff;
+}
+
+

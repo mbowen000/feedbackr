@@ -1,0 +1,14 @@
+{
+  "name": "ai-feedback-loop",
+  "version": "2.0.0",
+  "description": "Live-first multiplayer AI canvas and local MCP bridge for AI Feedback Loop",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.js",
+    "collab": "node --no-warnings server/launcher.js",
+    "collab:local": "node --no-warnings server/launcher.js --no-tunnel",
+    "mcp": "node --no-warnings server/mcpServer.js",
+    "verify": "node --no-warnings scripts/verify-e2e.js"
+  }
+}
+

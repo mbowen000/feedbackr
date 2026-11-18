@@ -1,73 +1,181 @@
 /**
- * Main Content Script for AI Feedback Loop.
- * Manages the Shadow DOM UI, element inspector, pin rendering/anchoring,
- * right-hand comment drawer, and clipboard/markdown export.
+ * Main Content Script for AI Feedback Loop v2.0.0.
+ * Manages the Shadow DOM UI, element inspector, 3-tier pin anchoring,
+ * live multiplayer cursors, Host Review Inbox drawer, threaded replies,
+ * and clipboard/markdown export.
  */
 (() => {
+  const isGuestMode = Boolean(window.__AIFL_GUEST_MODE__);
+  const hasExtensionRuntime = typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id);
+
+  // If Chrome Extension Host runs on a proxied localhost page, yield the DOM to Host Extension.
+  if (!isGuestMode && hasExtensionRuntime) {
+    document.documentElement.dataset.aiflExtensionActive = '1';
+    document.dispatchEvent(new CustomEvent('aifl:extension-active'));
+    const staleGuestHost = document.querySelector('#ai-feedback-loop-host[data-aifl-mode="guest"]');
+    if (staleGuestHost) {
+      staleGuestHost.remove();
+    }
+  } else if (isGuestMode && document.documentElement?.dataset?.aiflExtensionActive === '1') {
+    return;
+  }
+
   if (window.__AIFeedbackLoopLoaded) return;
   window.__AIFeedbackLoopLoaded = true;
 
   const state = {
     mounted: false,
+    tornDown: false,
     toolbarVisible: false,
     inspecting: false,
     pinDropMode: 'element', // 'element' | 'free'
     ctrlHeld: false,
     lastMousePos: { x: 0, y: 0 },
     drawerOpen: false,
+    connectPopoverOpen: false,
     comments: [],
     focusedCommentId: null,
-    pendingPin: null, // { element, context, clientX, clientY }
+    pendingPin: null, // { mode, element, context, clientX, clientY, commentId }
     filterScope: 'all', // 'all' | 'screen'
+    statusFilter: 'all', // 'all' | 'pending' | 'approved' | 'resolved'
     promptMode: 'standard', // 'standard' | 'compact'
+    selectedPinIds: new Set(),
     confirmingClearToolbar: false,
     confirmingClearDrawer: false,
-    hoveredElement: null
+    hoveredElement: null,
+    lastRouteKey: window.AIFLStorage ? window.AIFLStorage.getRouteKey() : '/'
   };
 
   let hostEl = null;
   let shadowRoot = null;
   let ui = {};
   let rafId = null;
+  let hmrReanchorTimer = null;
   let clearConfirmTimer = null;
   let focusHighlightTimer = null;
   let toastTimer = null;
+  let cursorCleanupTimer = null;
+  let mutationObserver = null;
 
   // Map of comment.id -> live DOM element cache
   const elementCache = new Map();
+  // Map of clientId -> { clientId, author, cursor, updatedAt }
+  const peerCursors = new Map();
+  // Unsent reply drafts keyed by comment.id so live sync re-renders never wipe typing
+  const replyDrafts = new Map();
+  // Storage listener unsubscribes
+  const unsubscribes = [];
+
+  function getSession() {
+    return window.AIFLStorage
+      ? window.AIFLStorage.getSessionState()
+      : {
+          connected: false,
+          connecting: false,
+          mode: 'standalone',
+          role: 'standalone',
+          author: { id: 'host_local', name: 'Host', role: 'host', color: '#6366f1' },
+          peers: [],
+          serverUrl: '',
+          guestName: '',
+          hasHostToken: false,
+          lastError: null
+        };
+  }
+
+  /**
+   * Tears down guest overlay cleanly if Chrome Extension Host takes over the page.
+   */
+  function teardownGuestOverlay() {
+    if (!isGuestMode || state.tornDown) return;
+    state.tornDown = true;
+    try {
+      window.AIFLStorage?.disconnectLiveSession();
+    } catch {
+      // Ignore
+    }
+    if (mutationObserver) {
+      mutationObserver.disconnect();
+      mutationObserver = null;
+    }
+    clearInterval(cursorCleanupTimer);
+    clearTimeout(hmrReanchorTimer);
+    unsubscribes.forEach((fn) => fn());
+    unsubscribes.length = 0;
+
+    window.removeEventListener('mousemove', onPageMouseMove, true);
+    window.removeEventListener('click', onPageClick, true);
+    window.removeEventListener('keydown', onPageKeyDown, true);
+    window.removeEventListener('keyup', onPageKeyUp, true);
+    window.removeEventListener('scroll', schedulePinPositionUpdate, true);
+    window.removeEventListener('resize', schedulePinPositionUpdate, true);
+    window.removeEventListener('hashchange', onRouteOrDomChange);
+    window.removeEventListener('popstate', onRouteOrDomChange);
+
+    if (hostEl && hostEl.parentNode) {
+      hostEl.remove();
+    }
+    state.mounted = false;
+  }
+
+  if (isGuestMode) {
+    document.addEventListener('aifl:extension-active', teardownGuestOverlay, { once: true });
+  }
+
+  /**
+   * Loads CSS for Shadow DOM from inline bundle, chrome extension URL, or /__collab/styles.css.
+   */
+  async function loadStylesText() {
+    if (typeof window.__AIFL_INLINE_CSS__ === 'string' && window.__AIFL_INLINE_CSS__.length > 0) {
+      return window.__AIFL_INLINE_CSS__;
+    }
+    if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.getURL === 'function') {
+      try {
+        const cssUrl = chrome.runtime.getURL('content/styles.css');
+        const res = await fetch(cssUrl);
+        if (res.ok) return await res.text();
+      } catch (err) {
+        console.warn('AI Feedback Loop: Could not fetch extension styles.css', err);
+      }
+    }
+    try {
+      const res = await fetch('/__collab/styles.css');
+      if (res.ok) return await res.text();
+    } catch (err) {
+      console.warn('AI Feedback Loop: Could not fetch /__collab/styles.css', err);
+    }
+    return '';
+  }
 
   /**
    * Mounts the isolated Shadow DOM container and loads styles.
    */
   async function ensureMounted() {
+    if (state.tornDown) return;
     if (state.mounted && hostEl && document.documentElement.contains(hostEl)) {
       return;
     }
 
     hostEl = document.createElement('div');
     hostEl.id = 'ai-feedback-loop-host';
+    hostEl.dataset.aiflMode = isGuestMode ? 'guest' : 'host';
     hostEl.style.cssText =
       'all: initial !important; position: fixed !important; inset: 0 !important; pointer-events: none !important; z-index: 2147483640 !important;';
     shadowRoot = hostEl.attachShadow({ mode: 'open' });
 
-    // Load CSS into Shadow DOM
-    let cssText = '';
-    try {
-      const cssUrl = chrome.runtime.getURL('content/styles.css');
-      const res = await fetch(cssUrl);
-      cssText = await res.text();
-    } catch (err) {
-      console.warn('AI Feedback Loop: Could not fetch styles.css', err);
-    }
+    const cssText = await loadStylesText();
+    if (state.tornDown) return;
 
     const styleEl = document.createElement('style');
     styleEl.textContent = cssText;
     shadowRoot.appendChild(styleEl);
 
-    // Build Shadow DOM structure
     const container = document.createElement('div');
     container.className = 'aifl-layer';
     container.innerHTML = `
+      <!-- Live Multiplayer Cursors -->
+      <div class="aifl-cursors-container" id="aifl-cursors-container"></div>
+
       <!-- Hover Inspector Box -->
       <div class="aifl-hover-box" id="aifl-hover-box">
         <div class="aifl-hover-label" id="aifl-hover-label"></div>
@@ -116,6 +224,39 @@
         </div>
       </div>
 
+      <!-- Live Session / Identity Popover -->
+      <div class="aifl-connect-popover" id="aifl-connect-popover">
+        <div class="aifl-connect-header">
+          <span>Live Collaboration</span>
+          <button class="aifl-popover-close" id="aifl-connect-close" title="Close">×</button>
+        </div>
+        <div class="aifl-connect-sub" id="aifl-connect-status-text">Local standalone mode</div>
+        <div class="aifl-peers-list" id="aifl-peers-list"></div>
+
+        <div class="aifl-field-group">
+          <label class="aifl-field-label" for="aifl-name-input">Your Display Name</label>
+          <div class="aifl-input-row">
+            <input class="aifl-input" id="aifl-name-input" type="text" placeholder="Display name" />
+            <button class="aifl-btn aifl-btn-sm" id="aifl-name-save">Save</button>
+          </div>
+        </div>
+
+        <div id="aifl-manual-connect-group" style="display: flex; flex-direction: column; gap: 8px;">
+          <div class="aifl-field-group">
+            <label class="aifl-field-label" for="aifl-server-url-input">Collab Server URL</label>
+            <input class="aifl-input" id="aifl-server-url-input" type="text" placeholder="http://127.0.0.1:4173" />
+          </div>
+          <div class="aifl-field-group">
+            <label class="aifl-field-label" for="aifl-host-token-input">Host Token (optional)</label>
+            <input class="aifl-input" id="aifl-host-token-input" type="password" placeholder="Paste hostToken for Host controls" />
+          </div>
+          <div class="aifl-input-row" style="justify-content: flex-end;">
+            <button class="aifl-btn aifl-btn-sm aifl-btn-danger" id="aifl-disconnect-btn" style="display: none;">Disconnect</button>
+            <button class="aifl-btn aifl-btn-sm aifl-btn-primary" id="aifl-connect-btn">Connect</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Floating Control Bar -->
       <div class="aifl-toolbar hidden" id="aifl-toolbar">
         <div class="aifl-drag-handle" id="aifl-drag-handle" title="Drag to reposition">
@@ -123,16 +264,21 @@
           <span>AI Feedback Loop</span>
         </div>
 
+        <button class="aifl-btn aifl-live-pill" id="aifl-live-pill" title="Live session status, display name, and connection">
+          <span class="aifl-live-dot"></span>
+          <span id="aifl-live-pill-label">Local</span>
+        </button>
+
         <button class="aifl-btn aifl-btn-primary" id="aifl-btn-add" title="Hover elements to highlight (hold Ctrl for free-drop pin)">
           <span id="aifl-btn-add-label">+ Add Comment</span>
         </button>
 
         <button class="aifl-btn" id="aifl-btn-drawer" title="Open comments drawer">
-          <span>Comments</span>
+          <span>Inbox</span>
           <span class="aifl-badge" id="aifl-toolbar-count">0</span>
         </button>
 
-        <button class="aifl-btn" id="aifl-btn-copy" title="Copy all comments as an AI prompt">
+        <button class="aifl-btn" id="aifl-btn-copy" title="Copy visible comments as an AI prompt">
           <span id="aifl-btn-copy-label">Copy Prompt</span>
         </button>
 
@@ -151,13 +297,13 @@
         </div>
       </div>
 
-      <!-- Right-Hand Slide-Out Drawer -->
+      <!-- Right-Hand Slide-Out Drawer (Host Review Inbox / Guest Feed) -->
       <aside class="aifl-drawer" id="aifl-drawer">
         <div class="aifl-drawer-header">
           <div class="aifl-drawer-title-row">
             <h2 class="aifl-drawer-title">
               <span class="aifl-brand-dot"></span>
-              <span>AI Feedback Loop</span>
+              <span>Review Inbox</span>
               <span class="aifl-badge" id="aifl-drawer-count">0</span>
             </h2>
             <button class="aifl-btn aifl-btn-icon" id="aifl-drawer-close" title="Close drawer">✕</button>
@@ -173,6 +319,24 @@
               <button class="aifl-tab active" id="aifl-mode-standard" title="Includes computed styles and full context">Full Context</button>
               <button class="aifl-tab" id="aifl-mode-compact" title="Compact token-efficient prompt">Compact</button>
             </div>
+          </div>
+
+          <div class="aifl-status-filters" id="aifl-status-filters">
+            <button class="aifl-status-tab active" data-status="all" id="aifl-status-all">All (0)</button>
+            <button class="aifl-status-tab" data-status="pending" id="aifl-status-pending">Pending (0)</button>
+            <button class="aifl-status-tab" data-status="approved" id="aifl-status-approved">Approved (0)</button>
+            <button class="aifl-status-tab" data-status="resolved" id="aifl-status-resolved">Resolved (0)</button>
+          </div>
+        </div>
+
+        <div class="aifl-batch-bar" id="aifl-batch-bar">
+          <div class="aifl-batch-left">
+            <button class="aifl-btn aifl-btn-sm" id="aifl-select-pending">Select Pending</button>
+            <span id="aifl-selected-count" style="font-size: 11px; color: #94a3b8;">0 selected</span>
+          </div>
+          <div class="aifl-batch-actions">
+            <button class="aifl-btn aifl-btn-sm" id="aifl-batch-copy">Copy Selected</button>
+            <button class="aifl-btn aifl-btn-primary aifl-btn-sm" id="aifl-batch-run">Run Agent on Selected</button>
           </div>
         </div>
 
@@ -212,6 +376,7 @@
     document.documentElement.appendChild(hostEl);
 
     ui = {
+      cursorsContainer: shadowRoot.getElementById('aifl-cursors-container'),
       hoverBox: shadowRoot.getElementById('aifl-hover-box'),
       hoverLabel: shadowRoot.getElementById('aifl-hover-label'),
       freeCursor: shadowRoot.getElementById('aifl-free-cursor'),
@@ -228,9 +393,22 @@
       popoverCancel: shadowRoot.getElementById('aifl-popover-cancel'),
       popoverSave: shadowRoot.getElementById('aifl-popover-save'),
       popoverGripper: shadowRoot.getElementById('aifl-popover-gripper'),
+      connectPopover: shadowRoot.getElementById('aifl-connect-popover'),
+      connectClose: shadowRoot.getElementById('aifl-connect-close'),
+      connectStatusText: shadowRoot.getElementById('aifl-connect-status-text'),
+      peersList: shadowRoot.getElementById('aifl-peers-list'),
+      nameInput: shadowRoot.getElementById('aifl-name-input'),
+      nameSave: shadowRoot.getElementById('aifl-name-save'),
+      manualConnectGroup: shadowRoot.getElementById('aifl-manual-connect-group'),
+      serverUrlInput: shadowRoot.getElementById('aifl-server-url-input'),
+      hostTokenInput: shadowRoot.getElementById('aifl-host-token-input'),
+      connectBtn: shadowRoot.getElementById('aifl-connect-btn'),
+      disconnectBtn: shadowRoot.getElementById('aifl-disconnect-btn'),
       toolbar: shadowRoot.getElementById('aifl-toolbar'),
       dragHandle: shadowRoot.getElementById('aifl-drag-handle'),
       toolbarGripper: shadowRoot.getElementById('aifl-toolbar-gripper'),
+      livePill: shadowRoot.getElementById('aifl-live-pill'),
+      livePillLabel: shadowRoot.getElementById('aifl-live-pill-label'),
       btnAdd: shadowRoot.getElementById('aifl-btn-add'),
       btnAddLabel: shadowRoot.getElementById('aifl-btn-add-label'),
       btnDrawer: shadowRoot.getElementById('aifl-btn-drawer'),
@@ -247,6 +425,15 @@
       tabScreen: shadowRoot.getElementById('aifl-tab-screen'),
       modeStandard: shadowRoot.getElementById('aifl-mode-standard'),
       modeCompact: shadowRoot.getElementById('aifl-mode-compact'),
+      statusAll: shadowRoot.getElementById('aifl-status-all'),
+      statusPending: shadowRoot.getElementById('aifl-status-pending'),
+      statusApproved: shadowRoot.getElementById('aifl-status-approved'),
+      statusResolved: shadowRoot.getElementById('aifl-status-resolved'),
+      batchBar: shadowRoot.getElementById('aifl-batch-bar'),
+      selectPendingBtn: shadowRoot.getElementById('aifl-select-pending'),
+      selectedCountEl: shadowRoot.getElementById('aifl-selected-count'),
+      batchCopyBtn: shadowRoot.getElementById('aifl-batch-copy'),
+      batchRunBtn: shadowRoot.getElementById('aifl-batch-run'),
       drawerBody: shadowRoot.getElementById('aifl-drawer-body'),
       previewPre: shadowRoot.getElementById('aifl-preview-pre'),
       drawerCopy: shadowRoot.getElementById('aifl-drawer-copy'),
@@ -257,15 +444,80 @@
 
     bindUIEvents();
     state.mounted = true;
+    renderLiveStatus();
+  }
+
+  function scheduleHmrReanchor() {
+    if (!state.mounted || state.tornDown) return;
+    clearTimeout(hmrReanchorTimer);
+    hmrReanchorTimer = setTimeout(() => {
+      hmrReanchorTimer = null;
+      if (state.tornDown) return;
+      const currentRoute = window.AIFLStorage.getRouteKey();
+      elementCache.clear();
+      if (currentRoute !== state.lastRouteKey) {
+        state.lastRouteKey = currentRoute;
+        renderAll();
+        return;
+      }
+      updatePinPositions();
+      if (state.drawerOpen) {
+        renderDrawer();
+      }
+    }, 150);
   }
 
   /**
    * Binds event listeners inside the Shadow DOM and page-level listeners.
    */
   function bindUIEvents() {
-    // Toolbar & Popover draggable support (header/handle + bottom-right 3-dot gripper)
     setupFloatingDrag([ui.dragHandle, ui.toolbarGripper], ui.toolbar);
     setupFloatingDrag([ui.popoverGripper, ui.popoverHeader], ui.popover);
+
+    // Live session / identity popover controls
+    ui.livePill.addEventListener('click', () => {
+      setConnectPopoverOpen(!state.connectPopoverOpen);
+    });
+    ui.connectClose.addEventListener('click', () => setConnectPopoverOpen(false));
+
+    [ui.nameInput, ui.serverUrlInput, ui.hostTokenInput].forEach((input) => {
+      input.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') {
+          setConnectPopoverOpen(false);
+        } else if (e.key === 'Enter' && input === ui.nameInput) {
+          saveDisplayName();
+        }
+      });
+    });
+
+    ui.nameSave.addEventListener('click', saveDisplayName);
+
+    ui.connectBtn.addEventListener('click', async () => {
+      const serverUrl = ui.serverUrlInput.value.trim() || 'http://127.0.0.1:4173';
+      const hostToken = ui.hostTokenInput.value.trim();
+      const authorName = ui.nameInput.value.trim();
+      const result = await window.AIFLStorage.connectLiveSession({
+        serverUrl,
+        hostToken,
+        authorName
+      });
+      renderLiveStatus();
+      if (result.connected) {
+        showToast(`Connected as ${result.role}`);
+      } else {
+        showToast('Could not connect to collab server');
+      }
+    });
+
+    ui.disconnectBtn.addEventListener('click', async () => {
+      window.AIFLStorage.disconnectLiveSession();
+      state.comments = await window.AIFLStorage.loadComments();
+      peerCursors.clear();
+      renderPeerCursors();
+      renderAll();
+      showToast('Switched to local mode');
+    });
 
     // Add Comment button
     ui.btnAdd.addEventListener('click', () => {
@@ -306,6 +558,7 @@
     ui.btnClose.addEventListener('click', () => {
       setInspecting(false);
       closePopover();
+      setConnectPopoverOpen(false);
       setDrawerOpen(false);
       setToolbarVisible(false);
     });
@@ -348,6 +601,38 @@
       renderDrawer();
     });
 
+    [ui.statusAll, ui.statusPending, ui.statusApproved, ui.statusResolved].forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.statusFilter = btn.dataset.status || 'all';
+        renderDrawer();
+      });
+    });
+
+    // Batch triage events
+    ui.selectPendingBtn.addEventListener('click', () => {
+      const visiblePending = getFilteredComments().filter((c) => (c.status || 'pending') === 'pending');
+      if (visiblePending.length === 0) {
+        showToast('No pending pins in current view');
+        return;
+      }
+      const allAlreadySelected = visiblePending.every((c) => state.selectedPinIds.has(c.id));
+      if (allAlreadySelected) {
+        visiblePending.forEach((c) => state.selectedPinIds.delete(c.id));
+      } else {
+        visiblePending.forEach((c) => state.selectedPinIds.add(c.id));
+      }
+      renderDrawer();
+    });
+
+    ui.batchCopyBtn.addEventListener('click', () => {
+      const filtered = getFilteredComments();
+      const checked = filtered.filter((c) => state.selectedPinIds.has(c.id));
+      const targets = checked.length > 0 ? checked : filtered;
+      copyPromptToClipboard(targets);
+    });
+
+    ui.batchRunBtn.addEventListener('click', handleRunAgentOnSelected);
+
     ui.drawerCopy.addEventListener('click', () => {
       copyPromptToClipboard(getFilteredComments());
     });
@@ -375,7 +660,7 @@
       await handleClearAll();
     });
 
-    // Page-level mousemove, click & key events for Inspect Mode (including holding Ctrl to toggle Free Pin mode)
+    // Page-level mousemove, click & key events
     window.addEventListener('mousemove', onPageMouseMove, true);
     window.addEventListener('click', onPageClick, true);
     window.addEventListener('keydown', onPageKeyDown, true);
@@ -388,31 +673,231 @@
       }
     });
 
-    // Reposition pins on scroll, resize, hash/history change, and DOM mutations (accordions/menus/tabs)
+    // Fast rAF repositioning on scroll/resize, 150ms debounced re-anchor on DOM/HMR mutations
     window.addEventListener('scroll', schedulePinPositionUpdate, true);
     window.addEventListener('resize', schedulePinPositionUpdate, true);
     window.addEventListener('hashchange', onRouteOrDomChange);
     window.addEventListener('popstate', onRouteOrDomChange);
 
-    const observer = new MutationObserver(() => {
-      schedulePinPositionUpdate();
+    mutationObserver = new MutationObserver((mutations) => {
+      if (hostEl && mutations.every((m) => m.target === hostEl || hostEl.contains(m.target))) {
+        return;
+      }
+      scheduleHmrReanchor();
     });
-    observer.observe(document.documentElement, {
+    mutationObserver.observe(document.documentElement, {
       childList: true,
       subtree: true,
       attributes: true,
       attributeFilter: ['open', 'class', 'style', 'aria-expanded', 'aria-selected', 'hidden', 'data-state']
     });
 
-    // Sync across tabs or storage updates
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local') {
-        const key = window.AIFLStorage.getSiteKey();
-        if (changes[key]) {
-          state.comments = Array.isArray(changes[key].newValue) ? changes[key].newValue : [];
+    // Periodic cleanup to fade stale multiplayer cursors (~5s)
+    cursorCleanupTimer = setInterval(() => {
+      if (peerCursors.size > 0) {
+        renderPeerCursors();
+      }
+    }, 1000);
+
+    // Sync across tabs in standalone chrome.storage mode
+    if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && getSession().mode === 'standalone') {
+          const key = window.AIFLStorage.getSiteKey();
+          if (changes[key]) {
+            state.comments = window.AIFLStorage.normalizePins
+              ? changes[key].newValue || []
+              : Array.isArray(changes[key].newValue)
+              ? changes[key].newValue
+              : [];
+            elementCache.clear();
+            renderAll();
+          }
+        }
+      });
+    }
+
+    // Live WebSocket sync listeners
+    if (window.AIFLStorage) {
+      unsubscribes.push(
+        window.AIFLStorage.onSyncUpdate((pins) => {
+          state.comments = pins;
           elementCache.clear();
           renderAll();
+        }),
+        window.AIFLStorage.onPeersUpdate((peers, event) => {
+          const activeIds = new Set(peers.map((p) => p.clientId));
+          for (const cid of Array.from(peerCursors.keys())) {
+            if (activeIds.size > 0 && !activeIds.has(cid)) {
+              peerCursors.delete(cid);
+            }
+          }
+          if (event?.type === 'cursor_move' && event.clientId) {
+            const selfId = getSession().author?.id;
+            if (event.clientId !== selfId) {
+              peerCursors.set(event.clientId, {
+                clientId: event.clientId,
+                author: event.author || { name: 'Peer', color: '#10b981', role: 'guest' },
+                cursor: event.cursor || {},
+                updatedAt: Date.now()
+              });
+            }
+          }
+          renderPeerCursors();
+          renderLiveStatus();
+        }),
+        window.AIFLStorage.onSessionError((err) => {
+          showToast(err?.message || 'Action denied by server');
+        }),
+        window.AIFLStorage.onSessionStateChange(() => {
+          renderLiveStatus();
+          if (state.drawerOpen) {
+            renderDrawer();
+          }
+        })
+      );
+    }
+  }
+
+  function saveDisplayName() {
+    const nextName = ui.nameInput.value.trim();
+    if (!nextName) {
+      showToast('Enter a display name');
+      return;
+    }
+    window.AIFLStorage.setAuthorName(nextName);
+    renderLiveStatus();
+    showToast(`Display name set to "${nextName}"`);
+  }
+
+  function setConnectPopoverOpen(open) {
+    state.connectPopoverOpen = open;
+    if (!ui.connectPopover) return;
+    ui.connectPopover.classList.toggle('visible', open);
+    if (open) {
+      const session = getSession();
+      ui.nameInput.value = session.author?.name || '';
+      if (!ui.serverUrlInput.value) {
+        ui.serverUrlInput.value = session.serverUrl || 'http://127.0.0.1:4173';
+      }
+      renderLiveStatus();
+    }
+  }
+
+  function renderLiveStatus() {
+    if (!state.mounted || !ui.livePill) return;
+    const session = getSession();
+    const isGuest = session.role === 'guest';
+
+    // Role-based UI visibility
+    if (ui.btnClear) ui.btnClear.style.display = isGuest ? 'none' : '';
+    if (ui.drawerClear) ui.drawerClear.style.display = isGuest ? 'none' : '';
+    if (ui.batchBar) ui.batchBar.classList.toggle('hidden', isGuest);
+    if (ui.manualConnectGroup) ui.manualConnectGroup.style.display = isGuestMode ? 'none' : 'flex';
+    if (ui.disconnectBtn) {
+      ui.disconnectBtn.style.display = !isGuestMode && session.mode === 'live' ? '' : 'none';
+    }
+
+    const peerCount = session.peers.length;
+    if (session.connected) {
+      ui.livePill.classList.add('is-live');
+      ui.livePill.classList.remove('is-connecting');
+      if (session.role === 'host') {
+        ui.livePillLabel.textContent = peerCount > 1 ? `Host • ${peerCount} live` : 'Host • Live';
+      } else {
+        ui.livePillLabel.textContent =
+          peerCount > 1 ? `${session.author.name} • ${peerCount} live` : `${session.author.name} • Live`;
+      }
+      if (ui.connectStatusText) {
+        ui.connectStatusText.textContent = `Connected as ${session.role.toUpperCase()} (${session.author.name}) • ${peerCount} active`;
+      }
+    } else if (session.connecting) {
+      ui.livePill.classList.remove('is-live');
+      ui.livePill.classList.add('is-connecting');
+      ui.livePillLabel.textContent = 'Connecting…';
+      if (ui.connectStatusText) {
+        ui.connectStatusText.textContent = `Connecting to ${session.serverUrl || 'collab server'}…`;
+      }
+    } else {
+      ui.livePill.classList.remove('is-live', 'is-connecting');
+      ui.livePillLabel.textContent = isGuest ? 'Guest (Offline)' : 'Local';
+      if (ui.connectStatusText) {
+        ui.connectStatusText.textContent = isGuest
+          ? 'Waiting to reconnect to live collab session…'
+          : 'Standalone local storage mode';
+      }
+    }
+
+    if (ui.peersList) {
+      ui.peersList.innerHTML = '';
+      for (const peer of session.peers) {
+        const chip = document.createElement('span');
+        chip.className = 'aifl-peer-chip';
+        chip.innerHTML = `<span class="aifl-peer-dot" style="background: ${escapeHtml(peer.color || '#10b981')};"></span><span>${escapeHtml(peer.name || 'Peer')} (${escapeHtml(peer.role || 'guest')})</span>`;
+        ui.peersList.appendChild(chip);
+      }
+    }
+  }
+
+  function renderPeerCursors() {
+    if (!ui.cursorsContainer) return;
+    if (!state.toolbarVisible && !getSession().connected) {
+      ui.cursorsContainer.innerHTML = '';
+      return;
+    }
+
+    const currentRoute = window.AIFLStorage.getRouteKey();
+    const now = Date.now();
+    const scrollX = window.scrollX || window.pageXOffset || 0;
+    const scrollY = window.scrollY || window.pageYOffset || 0;
+
+    // Remove cursors older than 12s
+    for (const [cid, entry] of peerCursors.entries()) {
+      if (now - entry.updatedAt > 12000) {
+        peerCursors.delete(cid);
+      }
+    }
+
+    const activeIds = new Set();
+    for (const [cid, entry] of peerCursors.entries()) {
+      const c = entry.cursor || {};
+      if (c.routeKey && c.routeKey !== currentRoute) continue;
+
+      const left = Number.isFinite(c.pageX) ? c.pageX - scrollX : c.clientX;
+      const top = Number.isFinite(c.pageY) ? c.pageY - scrollY : c.clientY;
+      if (!Number.isFinite(left) || !Number.isFinite(top)) continue;
+
+      activeIds.add(cid);
+      let cursorEl = ui.cursorsContainer.querySelector(`[data-peer-id="${CSS.escape(cid)}"]`);
+      if (!cursorEl) {
+        cursorEl = document.createElement('div');
+        cursorEl.className = 'aifl-peer-cursor';
+        cursorEl.dataset.peerId = cid;
+        const color = entry.author?.color || '#10b981';
+        const name = entry.author?.name || 'Guest';
+        cursorEl.innerHTML = `
+          <svg class="aifl-peer-cursor-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M5 3L19 12L12 14L9 21L5 3Z" fill="${escapeHtml(color)}" stroke="#ffffff" stroke-width="1.6" stroke-linejoin="round"/>
+          </svg>
+          <span class="aifl-peer-cursor-pill" style="background: ${escapeHtml(color)};">${escapeHtml(name)}</span>
+        `;
+        ui.cursorsContainer.appendChild(cursorEl);
+      } else {
+        const pill = cursorEl.querySelector('.aifl-peer-cursor-pill');
+        if (pill && entry.author?.name) {
+          pill.textContent = entry.author.name;
         }
+      }
+
+      cursorEl.style.left = `${Math.round(left)}px`;
+      cursorEl.style.top = `${Math.round(top)}px`;
+      cursorEl.classList.toggle('stale', now - entry.updatedAt > 5000);
+    }
+
+    // Remove DOM cursor elements not in activeIds
+    ui.cursorsContainer.querySelectorAll('.aifl-peer-cursor').forEach((el) => {
+      if (!activeIds.has(el.dataset.peerId)) {
+        el.remove();
       }
     });
   }
@@ -433,15 +918,49 @@
   async function handleClearAll() {
     state.comments = await window.AIFLStorage.clearComments('all');
     state.focusedCommentId = null;
+    state.selectedPinIds.clear();
     elementCache.clear();
     ui.focusBox.classList.remove('visible');
     renderAll();
     showToast('Cleared all comments');
   }
 
+  async function handleRunAgentOnSelected() {
+    const session = getSession();
+    if (session.role === 'guest') return;
+
+    const filtered = getFilteredComments();
+    const checked = filtered.filter((c) => state.selectedPinIds.has(c.id));
+    const targets =
+      checked.length > 0
+        ? checked
+        : filtered.filter((c) => {
+            const st = c.status || 'pending';
+            return st === 'pending' || st === 'approved';
+          });
+
+    if (targets.length === 0) {
+      showToast('No pending or approved pins to dispatch');
+      return;
+    }
+
+    const ids = targets.map((c) => c.id);
+    const res = await window.AIFLStorage.batchUpdateStatus(ids, 'approved');
+    state.comments = res.comments;
+    ids.forEach((id) => state.selectedPinIds.delete(id));
+
+    const updatedTargets = state.comments.filter((c) => ids.includes(c.id));
+    const msg =
+      session.connected && session.role === 'host'
+        ? `Approved ${ids.length} pin${ids.length === 1 ? '' : 's'} for MCP & copied prompt!`
+        : `Marked ${ids.length} pin${ids.length === 1 ? '' : 's'} approved & copied prompt!`;
+
+    await copyPromptToClipboard(updatedTargets, msg);
+    renderAll();
+  }
+
   /**
-   * Makes any floating element (toolbar, prompt popover) draggable via one or more handles
-   * (e.g. header bar and bottom-right 3-dot gripper).
+   * Makes any floating element (toolbar, prompt popover) draggable via one or more handles.
    */
   function setupFloatingDrag(handleEls, targetEl) {
     const handles = Array.isArray(handleEls) ? handleEls.filter(Boolean) : [handleEls].filter(Boolean);
@@ -454,7 +973,6 @@
     handles.forEach((handleEl) => {
       handleEl.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
-        // Ignore clicks on close buttons inside a header handle
         if (e.target.closest('button')) return;
         dragging = true;
         const rect = targetEl.getBoundingClientRect();
@@ -502,6 +1020,7 @@
     if (!nextVisible) {
       setInspecting(false);
       closePopover();
+      setConnectPopoverOpen(false);
       setDrawerOpen(false);
       ui.focusBox?.classList.remove('visible');
     }
@@ -522,10 +1041,6 @@
     }
   }
 
-  /**
-   * Returns true when holding Ctrl while in drop-a-pin mode (Free-Drop dangling pin).
-   * Default is always the DevTools-style DOM element highlighter.
-   */
   function isFreeDropActive() {
     return Boolean(state.ctrlHeld);
   }
@@ -552,6 +1067,7 @@
       ui.freeCursor?.classList.remove('visible');
     } else {
       closePopover();
+      setConnectPopoverOpen(false);
     }
   }
 
@@ -560,16 +1076,13 @@
     if (!ui.drawer) return;
     ui.drawer.classList.toggle('open', open);
     if (open) {
+      setConnectPopoverOpen(false);
       renderDrawer();
     } else {
       ui.focusBox.classList.remove('visible');
     }
   }
 
-  /**
-   * Updates the visual inspect overlay (either Element Picker box or Free-Drop Coordinate reticle)
-   * at the current cursor position.
-   */
   function refreshInspectOverlay() {
     if (!state.inspecting || state.pendingPin) return;
     const { x: clientX, y: clientY } = state.lastMousePos;
@@ -596,8 +1109,6 @@
       ui.freeCursor.classList.add('visible');
 
       ui.freeLabel.innerHTML = `<span>📍 (${pageX}, ${pageY}) • ${pctX}% X, ${pctY}% Y</span><span class="aifl-hover-hint">Click to drop • Release Ctrl for Element Picker</span>`;
-
-      // Keep label inside viewport near right edge
       ui.freeLabel.style.left = clientX > vw - 310 ? '-295px' : '20px';
       return;
     }
@@ -622,24 +1133,30 @@
     const label = window.AIFLPromptGenerator.buildShortElementLabel(target);
     const dims = `${Math.round(rect.width)}×${Math.round(rect.height)}`;
     ui.hoverLabel.innerHTML = `<span>${escapeHtml(label)}</span><span class="aifl-hover-hint">${dims} • Hold Ctrl for Free Pin • Shift+Click to interact</span>`;
-
-    // Flip label inside box if near top of viewport
     ui.hoverLabel.style.top = rect.top < 32 ? '4px' : '-28px';
   }
 
-  /**
-   * Handles mouse hover while in "Add Comment" inspect mode.
-   */
   function onPageMouseMove(e) {
     state.lastMousePos = { x: e.clientX, y: e.clientY };
+
+    // Stream throttled multiplayer cursor position when connected
+    if (window.AIFLStorage && getSession().connected) {
+      window.AIFLStorage.sendCursor({
+        pageX: Math.round(e.clientX + (window.scrollX || window.pageXOffset || 0)),
+        pageY: Math.round(e.clientY + (window.scrollY || window.pageYOffset || 0)),
+        clientX: Math.round(e.clientX),
+        clientY: Math.round(e.clientY),
+        routeKey: window.AIFLStorage.getRouteKey()
+      });
+    }
+
     if (e.ctrlKey !== state.ctrlHeld) {
       state.ctrlHeld = Boolean(e.ctrlKey);
       updateModeIndicator();
     }
     if (!state.inspecting || state.pendingPin) return;
 
-    // Ignore events originating inside our own Shadow DOM host
-    if (e.composedPath().includes(hostEl)) {
+    if (hostEl && e.composedPath().includes(hostEl)) {
       ui.hoverBox.classList.remove('visible');
       ui.freeCursor?.classList.remove('visible');
       state.hoveredElement = null;
@@ -649,23 +1166,15 @@
     refreshInspectOverlay();
   }
 
-  /**
-   * Handles page click when dropping a pin in "Add Comment" mode
-   * (supports both Element Picker and Free-Drop Coordinate Pin).
-   */
   function onPageClick(e) {
     if (!state.inspecting) return;
+    if (hostEl && e.composedPath().includes(hostEl)) return;
 
-    // Allow clicks inside our own UI
-    if (e.composedPath().includes(hostEl)) return;
-
-    // Sync Ctrl key state on click
     if (e.ctrlKey !== state.ctrlHeld) {
       state.ctrlHeld = Boolean(e.ctrlKey);
       updateModeIndicator();
     }
 
-    // Allow Shift+Click to pass through so user can open accordions, dropdowns, tabs, or modals!
     if (e.shiftKey) {
       schedulePinPositionUpdate();
       return;
@@ -691,12 +1200,17 @@
   }
 
   function onPageKeyDown(e) {
-    // Fallback shortcut Alt+Shift+F directly in page
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    const targetTag = (path[0]?.tagName || e.target?.tagName || '').toLowerCase();
+    const isTypingInInput = targetTag === 'input' || targetTag === 'textarea' || path[0]?.isContentEditable;
+
     if (e.altKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
       e.preventDefault();
       toggleToolbar();
       return;
     }
+
+    if (isTypingInInput) return;
 
     if ((e.key === 'Control' || e.ctrlKey) && !state.ctrlHeld) {
       state.ctrlHeld = true;
@@ -707,6 +1221,8 @@
     if (e.key === 'Escape') {
       if (state.pendingPin) {
         closePopover();
+      } else if (state.connectPopoverOpen) {
+        setConnectPopoverOpen(false);
       } else if (state.inspecting) {
         setInspecting(false);
       } else if (state.drawerOpen) {
@@ -723,14 +1239,12 @@
     }
   }
 
-  /**
-   * Opens the floating Prompt popover where the user can create a new pin comment
-   * (or edit an existing pin) and drag the prompt around via the bottom-right 3-dot gripper.
-   */
   function openQuickAddPopover(element, context, clientX, clientY) {
     const isFree = Boolean(context?.target?.isFreePin);
     state.pendingPin = { mode: 'create', element, context, clientX, clientY };
-    ui.popoverBadge.textContent = `Pin #${state.comments.length + 1}${isFree ? ' • Free' : ''}`;
+    const nextNum =
+      state.comments.reduce((max, c) => Math.max(max, Number(c.number) || 0), 0) + 1;
+    ui.popoverBadge.textContent = `Pin #${nextNum}${isFree ? ' • Free' : ''}`;
     ui.popoverTarget.textContent = context.target.shortLabel || context.target.tagName;
     ui.popoverSave.textContent = 'Save Pin';
     ui.popoverTextarea.value = '';
@@ -738,7 +1252,6 @@
     positionPopoverNear(clientX, clientY);
     ui.popover.classList.add('visible');
 
-    // Highlight target element or coordinate spot while typing comment
     if (isFree) {
       positionCoordinateFocusRing(clientX, clientY);
     } else if (element) {
@@ -750,13 +1263,11 @@
     }, 20);
   }
 
-  /**
-   * Opens the floating Prompt popover for an existing saved pin so you can edit & save it
-   * directly in the floating box (and move it around with the 3-dot gripper).
-   */
   function openEditPinPopover(comment, anchorX, anchorY) {
     const isFree = Boolean(comment.target?.isFreePin);
-    const el = isFree ? null : (elementCache.get(comment.id) || window.AIFLPromptGenerator.resolveTargetElement(comment));
+    const anchor = window.AIFLPromptGenerator.resolvePinAnchor(comment);
+    const el = isFree ? null : anchor.element;
+
     state.pendingPin = {
       mode: 'edit',
       commentId: comment.id,
@@ -785,7 +1296,6 @@
   function positionPopoverNear(clientX, clientY) {
     const popWidth = 340;
     const popHeight = 185;
-    // Leave room for the right-hand drawer if it's open
     const maxRight = state.drawerOpen ? Math.max(360, window.innerWidth - 425) : window.innerWidth - 12;
     const left = Math.max(12, Math.min(maxRight - popWidth, clientX + 18));
     const top = Math.max(12, Math.min(window.innerHeight - popHeight - 12, clientY - 24));
@@ -845,6 +1355,7 @@
   }
 
   function onRouteOrDomChange() {
+    state.lastRouteKey = window.AIFLStorage.getRouteKey();
     elementCache.clear();
     renderAll();
   }
@@ -853,7 +1364,7 @@
     return state.comments;
   }
 
-  function getFilteredComments() {
+  function getScopedComments() {
     if (state.filterScope === 'screen') {
       const currentRoute = window.AIFLStorage.getRouteKey();
       return state.comments.filter((c) => c.screen?.routeKey === currentRoute);
@@ -861,25 +1372,42 @@
     return state.comments;
   }
 
+  function getFilteredComments() {
+    const scoped = getScopedComments();
+    if (state.statusFilter === 'pending') {
+      return scoped.filter((c) => (c.status || 'pending') === 'pending');
+    }
+    if (state.statusFilter === 'approved') {
+      return scoped.filter((c) => c.status === 'approved' || c.status === 'in_progress');
+    }
+    if (state.statusFilter === 'resolved') {
+      return scoped.filter((c) => c.status === 'resolved');
+    }
+    return scoped;
+  }
+
+  function canModifyPin(comment, session) {
+    if (session.role !== 'guest') return true;
+    return comment.author?.id === session.author?.id && (comment.status || 'pending') === 'pending';
+  }
+
   /**
-   * Renders toolbar badges, floating pin bubbles on the page, and the drawer list.
+   * Renders toolbar badges, live status pill, floating pin bubbles, and the drawer list.
    */
   function renderAll() {
-    if (!state.mounted) return;
+    if (!state.mounted || state.tornDown) return;
     const count = state.comments.length;
     ui.toolbarCount.textContent = String(count);
     ui.drawerCount.textContent = String(count);
 
+    renderLiveStatus();
     renderPins();
+    renderPeerCursors();
     if (state.drawerOpen) {
       renderDrawer();
     }
   }
 
-  /**
-   * Renders the numbered pin chat bubbles on the current screen,
-   * each with a bottom-right 3-dot gripper so the user can drag & move it around.
-   */
   function renderPins() {
     if (!ui.pinsContainer) return;
     if (!state.toolbarVisible) {
@@ -895,19 +1423,28 @@
 
     for (const comment of routeComments) {
       const isFree = Boolean(comment.target?.isFreePin || comment.target?.pinType === 'free');
+      const pinStatus = comment.status || 'pending';
       const pinEl = document.createElement('div');
-      pinEl.className = `aifl-pin${isFree ? ' free-pin' : ''}${state.focusedCommentId === comment.id ? ' active' : ''}`;
+      pinEl.className = `aifl-pin status-${pinStatus}${isFree ? ' free-pin' : ''}${
+        state.focusedCommentId === comment.id ? ' active' : ''
+      }`;
       pinEl.dataset.commentId = comment.id;
       pinEl.title = isFree
-        ? 'Free Coordinate Pin • Click to edit / view • Drag to move pin'
-        : 'Element Pin • Click to edit / view • Drag to move pin';
+        ? 'Free Coordinate Pin • Click to view/edit • Drag to move pin'
+        : 'Element Pin • Click to view/edit • Drag to move pin';
 
       const numSpan = document.createElement('span');
       numSpan.className = 'aifl-pin-num';
       numSpan.textContent = String(comment.number);
       pinEl.appendChild(numSpan);
 
-      // Bottom-right 3-dot gripper on the chat bubble
+      if (pinStatus === 'resolved') {
+        const checkBadge = document.createElement('span');
+        checkBadge.className = 'aifl-pin-check';
+        checkBadge.textContent = '✓';
+        pinEl.appendChild(checkBadge);
+      }
+
       const pinGripper = document.createElement('div');
       pinGripper.className = 'aifl-pin-gripper';
       pinGripper.title = 'Drag to reposition pin';
@@ -916,7 +1453,8 @@
 
       const tooltip = document.createElement('div');
       tooltip.className = 'aifl-pin-tooltip';
-      tooltip.textContent = comment.text || `Pin #${comment.number}`;
+      const authorPrefix = comment.author?.name ? `[${comment.author.name}] ` : '';
+      tooltip.textContent = `${authorPrefix}${comment.text || `Pin #${comment.number}`}`;
       pinEl.appendChild(tooltip);
 
       setupPinDragAndClick(pinEl, comment);
@@ -927,11 +1465,6 @@
     updatePinPositions();
   }
 
-  /**
-   * Enables dragging a pin bubble around the viewport (via the bubble or its 3-dot gripper)
-   * and persists its new position on drop. Clicking without dragging opens both the floating
-   * edit prompt and focuses the comment in the right-hand drawer.
-   */
   function setupPinDragAndClick(pinEl, comment) {
     let isDown = false;
     let didDrag = false;
@@ -956,6 +1489,9 @@
 
     const onMouseMove = (e) => {
       if (!isDown) return;
+      const session = getSession();
+      if (!canModifyPin(comment, session)) return;
+
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
       if (!didDrag && Math.hypot(dx, dy) > 4) {
@@ -978,14 +1514,17 @@
       window.removeEventListener('mouseup', onMouseUp, true);
       pinEl.classList.remove('dragging');
 
-      if (didDrag && comment._draggingPos) {
+      const session = getSession();
+
+      if (didDrag && comment._draggingPos && canModifyPin(comment, session)) {
         const finalX = comment._draggingPos.x;
         const finalY = comment._draggingPos.y;
         delete comment._draggingPos;
 
-        // Calculate updated offset relative to the target element (if connected) + page coords
         const isFree = Boolean(comment.target?.isFreePin || comment.target?.pinType === 'free');
-        const el = isFree ? null : (elementCache.get(comment.id) || window.AIFLPromptGenerator.resolveTargetElement(comment));
+        const el = isFree
+          ? null
+          : elementCache.get(comment.id) || window.AIFLPromptGenerator.resolveTargetElement(comment);
         const scrollX = window.scrollX || window.pageXOffset || 0;
         const scrollY = window.scrollY || window.pageYOffset || 0;
         const vw = window.innerWidth || 1;
@@ -1047,28 +1586,25 @@
       }
 
       delete comment._draggingPos;
-      // Normal click on the pin bubble: open floating edit prompt AND focus in drawer
       const clickX = parseFloat(pinEl.style.left) || e.clientX;
       const clickY = parseFloat(pinEl.style.top) || e.clientY;
       focusComment(comment.id, { openDrawer: true, scrollCardIntoView: true });
-      openEditPinPopover(comment, clickX, clickY);
+      if (canModifyPin(comment, session)) {
+        openEditPinPopover(comment, clickX, clickY);
+      }
     };
   }
 
   function schedulePinPositionUpdate() {
-    if (!state.mounted) return;
+    if (!state.mounted || state.tornDown) return;
     if (rafId) return;
     rafId = requestAnimationFrame(() => {
       rafId = null;
       updatePinPositions();
+      renderPeerCursors();
     });
   }
 
-  /**
-   * Updates the (x, y) viewport coordinates of every pin on the current screen.
-   * Dynamically hides pins whose target elements are inside collapsed accordions/menus/tabs
-   * and shows them again as soon as the container opens.
-   */
   function updatePinPositions() {
     if (!ui.pinsContainer) return;
     const pinNodes = ui.pinsContainer.querySelectorAll('.aifl-pin');
@@ -1085,71 +1621,35 @@
         return;
       }
 
-      // Free-Drop arbitrary coordinate pins stay locked to their page (x, y) coordinates
-      if (comment.target?.isFreePin || comment.target?.pinType === 'free') {
-        const pageX = comment.target?.pageCoords?.x ?? 100;
-        const pageY = comment.target?.pageCoords?.y ?? 100;
-        pinNode.style.display = 'flex';
-        pinNode.style.left = `${Math.round(pageX - window.scrollX)}px`;
-        pinNode.style.top = `${Math.round(pageY - window.scrollY)}px`;
+      const anchor = window.AIFLPromptGenerator.resolvePinAnchor(comment);
+      if (anchor.element) {
+        elementCache.set(id, anchor.element);
+      }
+
+      if (anchor.hiddenByAncestor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) {
+        pinNode.style.display = 'none';
         return;
       }
 
-      let el = elementCache.get(id);
-      if (!el || !el.isConnected) {
-        el = window.AIFLPromptGenerator.resolveTargetElement(comment);
-        if (el) elementCache.set(id, el);
-      }
-
-      if (el) {
-        const visible = window.AIFLPromptGenerator.isElementCurrentlyVisible(el);
-        if (!visible) {
-          pinNode.style.display = 'none';
-          return;
-        }
-        const rect = el.getBoundingClientRect();
-        const ratioX = comment.target?.offsetRatio?.x ?? 0.5;
-        const ratioY = comment.target?.offsetRatio?.y ?? 0.5;
-        const customDx = comment.target?.pinOffset?.dx ?? 0;
-        const customDy = comment.target?.pinOffset?.dy ?? 0;
-        const x = rect.left + rect.width * ratioX + customDx;
-        const y = rect.top + rect.height * ratioY + customDy;
-
-        pinNode.style.display = 'flex';
-        pinNode.style.left = `${Math.round(x)}px`;
-        pinNode.style.top = `${Math.round(y)}px`;
-      } else {
-        // Fallback to page coordinates if no interactive ancestors were required
-        const hasInteractiveAncestors =
-          Array.isArray(comment.target?.interactiveAncestors) &&
-          comment.target.interactiveAncestors.length > 0;
-        if (hasInteractiveAncestors) {
-          pinNode.style.display = 'none';
-          return;
-        }
-        const pageX = comment.target?.pageCoords?.x ?? 100;
-        const pageY = comment.target?.pageCoords?.y ?? 100;
-        pinNode.style.display = 'flex';
-        pinNode.style.left = `${Math.round(pageX - window.scrollX)}px`;
-        pinNode.style.top = `${Math.round(pageY - window.scrollY)}px`;
-      }
+      pinNode.style.display = 'flex';
+      pinNode.style.left = `${Math.round(anchor.x)}px`;
+      pinNode.style.top = `${Math.round(anchor.y)}px`;
     });
 
-    // Update focus highlight box if active
     if (state.focusedCommentId && (state.drawerOpen || state.pendingPin)) {
       const focusedComment = state.comments.find((c) => c.id === state.focusedCommentId);
       if (focusedComment) {
-        if (focusedComment.target?.isFreePin || focusedComment.target?.pinType === 'free') {
-          const pageX = focusedComment.target?.pageCoords?.x ?? 100;
-          const pageY = focusedComment.target?.pageCoords?.y ?? 100;
-          positionCoordinateFocusRing(pageX - window.scrollX, pageY - window.scrollY);
+        const anchor = window.AIFLPromptGenerator.resolvePinAnchor(focusedComment);
+        if (anchor.tier === 'free') {
+          positionCoordinateFocusRing(anchor.x, anchor.y);
+        } else if (anchor.element && !anchor.hiddenByAncestor) {
+          positionFocusBox(anchor.element);
+        } else if (anchor.containerElement && !anchor.hiddenByAncestor) {
+          positionFocusBox(anchor.containerElement);
+        } else if (!anchor.hiddenByAncestor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
+          positionCoordinateFocusRing(anchor.x, anchor.y);
         } else {
-          const el = elementCache.get(focusedComment.id) || window.AIFLPromptGenerator.resolveTargetElement(focusedComment);
-          if (el && window.AIFLPromptGenerator.isElementCurrentlyVisible(el)) {
-            positionFocusBox(el);
-          } else {
-            ui.focusBox.classList.remove('visible');
-          }
+          ui.focusBox.classList.remove('visible');
         }
       }
     }
@@ -1176,9 +1676,6 @@
     ui.focusBox.classList.add('visible');
   }
 
-  /**
-   * Focuses a specific comment (from clicking a pin bubble or a card in the drawer).
-   */
   function focusComment(commentId, options = {}) {
     state.focusedCommentId = commentId;
     setToolbarVisible(true);
@@ -1192,10 +1689,18 @@
 
     const currentRoute = window.AIFLStorage.getRouteKey();
     const isSameRoute = comment.screen?.routeKey === currentRoute;
-    const isFree = Boolean(comment.target?.isFreePin || comment.target?.pinType === 'free');
 
     if (isSameRoute) {
-      if (isFree) {
+      let anchor = window.AIFLPromptGenerator.resolvePinAnchor(comment);
+
+      if (options.revealIfHidden && anchor.hiddenByAncestor) {
+        const revealedEl = window.AIFLPromptGenerator.tryRevealTargetElement(comment);
+        if (revealedEl) elementCache.set(commentId, revealedEl);
+        anchor = window.AIFLPromptGenerator.resolvePinAnchor(comment);
+      }
+
+      const highlightTarget = anchor.element || anchor.containerElement;
+      if (anchor.tier === 'free' || (!highlightTarget && !anchor.hiddenByAncestor)) {
         const pageX = comment.target?.pageCoords?.x ?? 100;
         const pageY = comment.target?.pageCoords?.y ?? 100;
         if (options.scrollElementIntoView) {
@@ -1206,25 +1711,15 @@
           });
         }
         positionCoordinateFocusRing(pageX - window.scrollX, pageY - window.scrollY);
-      } else {
-        let el = elementCache.get(commentId) || window.AIFLPromptGenerator.resolveTargetElement(comment);
-
-        // If user clicked "Locate" in drawer and element is inside a closed accordion/details, try revealing it!
-        if (options.revealIfHidden && (!el || !window.AIFLPromptGenerator.isElementCurrentlyVisible(el))) {
-          el = window.AIFLPromptGenerator.tryRevealTargetElement(comment);
-          if (el) elementCache.set(commentId, el);
+      } else if (highlightTarget && window.AIFLPromptGenerator.isElementCurrentlyVisible(highlightTarget)) {
+        if (options.scrollElementIntoView) {
+          highlightTarget.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
         }
-
-        if (el && window.AIFLPromptGenerator.isElementCurrentlyVisible(el)) {
-          if (options.scrollElementIntoView) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-          }
-          positionFocusBox(el);
-          clearTimeout(focusHighlightTimer);
-          focusHighlightTimer = setTimeout(() => {
-            if (!state.drawerOpen) ui.focusBox.classList.remove('visible');
-          }, 3500);
-        }
+        positionFocusBox(highlightTarget);
+        clearTimeout(focusHighlightTimer);
+        focusHighlightTimer = setTimeout(() => {
+          if (!state.drawerOpen) ui.focusBox.classList.remove('visible');
+        }, 3500);
       }
     }
 
@@ -1243,11 +1738,12 @@
   }
 
   /**
-   * Renders the right-hand slide-out drawer contents and live AI prompt preview.
+   * Renders the right-hand slide-out Review Inbox drawer contents and live AI prompt preview.
    */
   function renderDrawer() {
     if (!ui.drawerBody) return;
-
+    const session = getSession();
+    const isGuest = session.role === 'guest';
     const currentRoute = window.AIFLStorage.getRouteKey();
     const allCount = state.comments.length;
     const screenCount = state.comments.filter((c) => c.screen?.routeKey === currentRoute).length;
@@ -1260,7 +1756,67 @@
     ui.modeStandard.classList.toggle('active', state.promptMode === 'standard');
     ui.modeCompact.classList.toggle('active', state.promptMode === 'compact');
 
+    // Update status filter counts within current scope
+    const scoped = getScopedComments();
+    const pendingCount = scoped.filter((c) => (c.status || 'pending') === 'pending').length;
+    const approvedCount = scoped.filter((c) => c.status === 'approved' || c.status === 'in_progress').length;
+    const resolvedCount = scoped.filter((c) => c.status === 'resolved').length;
+
+    ui.statusAll.textContent = `All (${scoped.length})`;
+    ui.statusPending.textContent = `Pending (${pendingCount})`;
+    ui.statusApproved.textContent = `Approved (${approvedCount})`;
+    ui.statusResolved.textContent = `Resolved (${resolvedCount})`;
+
+    [ui.statusAll, ui.statusPending, ui.statusApproved, ui.statusResolved].forEach((btn) => {
+      btn.classList.toggle('active', (btn.dataset.status || 'all') === state.statusFilter);
+    });
+
+    // Prune stale selections
+    const validIds = new Set(state.comments.map((c) => c.id));
+    for (const id of Array.from(state.selectedPinIds)) {
+      if (!validIds.has(id)) state.selectedPinIds.delete(id);
+    }
+
     const filtered = getFilteredComments();
+    const checkedVisibleCount = filtered.filter((c) => state.selectedPinIds.has(c.id)).length;
+    if (ui.selectedCountEl) {
+      ui.selectedCountEl.textContent = `${checkedVisibleCount} selected`;
+    }
+    if (ui.batchBar) {
+      ui.batchBar.classList.toggle('hidden', isGuest);
+    }
+
+    // Preserve active focus and draft reply input values across live WS re-renders
+    let activeFocusMeta = null;
+    const activeEl = shadowRoot?.activeElement;
+    if (activeEl && ui.drawerBody.contains(activeEl)) {
+      const cardEl = activeEl.closest('[data-card-id]');
+      if (cardEl) {
+        const cls = activeEl.classList.contains('aifl-reply-input')
+          ? 'aifl-reply-input'
+          : activeEl.classList.contains('aifl-card-textarea')
+          ? 'aifl-card-textarea'
+          : null;
+        if (cls) {
+          activeFocusMeta = {
+            cardId: cardEl.dataset.cardId,
+            cls,
+            value: activeEl.value,
+            selectionStart: activeEl.selectionStart,
+            selectionEnd: activeEl.selectionEnd
+          };
+        }
+      }
+    }
+
+    ui.drawerBody.querySelectorAll('.aifl-reply-input').forEach((inp) => {
+      const cid = inp.dataset.pinId;
+      if (cid) {
+        if (inp.value) replyDrafts.set(cid, inp.value);
+        else replyDrafts.delete(cid);
+      }
+    });
+
     ui.drawerBody.innerHTML = '';
 
     if (filtered.length === 0) {
@@ -1268,14 +1824,14 @@
       emptyEl.className = 'aifl-empty-state';
       emptyEl.innerHTML = `
         <div class="aifl-empty-icon">📌</div>
-        <div class="aifl-empty-title">No comments ${state.filterScope === 'screen' ? 'on this screen' : 'yet'}</div>
+        <div class="aifl-empty-title">No ${state.statusFilter !== 'all' ? escapeHtml(state.statusFilter) + ' ' : ''}comments ${state.filterScope === 'screen' ? 'on this screen' : 'yet'}</div>
         <div class="aifl-empty-desc">
-          Click <strong>+ Add Comment</strong> and select any element on the page to leave feedback for your AI agent.
+          Click <strong>+ Add Comment</strong> and select any element on the page to leave feedback.
         </div>
       `;
       const startBtn = document.createElement('button');
       startBtn.className = 'aifl-btn aifl-btn-primary';
-      startBtn.textContent = '+ Add First Comment';
+      startBtn.textContent = '+ Add Comment';
       startBtn.addEventListener('click', () => {
         setDrawerOpen(false);
         setToolbarVisible(true);
@@ -1285,12 +1841,39 @@
       ui.drawerBody.appendChild(emptyEl);
     } else {
       for (const comment of filtered) {
-        const card = createCommentCard(comment, currentRoute);
+        const card = createCommentCard(comment, currentRoute, session);
         ui.drawerBody.appendChild(card);
       }
     }
 
-    // Update live prompt preview & copy button label
+    // Restore unsent reply drafts and active focus
+    ui.drawerBody.querySelectorAll('.aifl-reply-input').forEach((inp) => {
+      const cid = inp.dataset.pinId;
+      if (cid && replyDrafts.has(cid)) {
+        inp.value = replyDrafts.get(cid);
+      }
+    });
+
+    if (activeFocusMeta) {
+      const targetCard = ui.drawerBody.querySelector(
+        `[data-card-id="${CSS.escape(activeFocusMeta.cardId)}"]`
+      );
+      const targetInput = targetCard?.querySelector(`.${activeFocusMeta.cls}`);
+      if (targetInput) {
+        if (activeFocusMeta.cls === 'aifl-card-textarea' && activeFocusMeta.value !== undefined) {
+          targetInput.value = activeFocusMeta.value;
+        }
+        targetInput.focus();
+        if (typeof activeFocusMeta.selectionStart === 'number') {
+          try {
+            targetInput.setSelectionRange(activeFocusMeta.selectionStart, activeFocusMeta.selectionEnd);
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    }
+
     const promptText = window.AIFLPromptGenerator.generateAIPrompt(filtered, {
       mode: state.promptMode
     });
@@ -1298,29 +1881,45 @@
     ui.drawerCopy.textContent = `Copy ${filtered.length} Comment${filtered.length === 1 ? '' : 's'} as AI Prompt`;
   }
 
-  /**
-   * Creates an individual comment card inside the Drawer.
-   */
-  function createCommentCard(comment, currentRoute) {
+  function formatStatusLabel(status) {
+    switch (status) {
+      case 'approved':
+        return 'Approved';
+      case 'in_progress':
+        return 'In Progress';
+      case 'resolved':
+        return '✓ Resolved';
+      default:
+        return 'Pending';
+    }
+  }
+
+  function createCommentCard(comment, currentRoute, session) {
     const t = comment.target || {};
+    const isGuest = session.role === 'guest';
+    const editable = canModifyPin(comment, session);
+    const pinStatus = comment.status || 'pending';
     const isFree = Boolean(t.isFreePin || t.pinType === 'free');
     const isSameRoute = comment.screen?.routeKey === currentRoute;
-    const liveEl = isSameRoute && !isFree
-      ? elementCache.get(comment.id) || window.AIFLPromptGenerator.resolveTargetElement(comment)
-      : null;
-    const isVisibleNow = isSameRoute && (isFree || (liveEl && window.AIFLPromptGenerator.isElementCurrentlyVisible(liveEl)));
+    const anchor = isSameRoute ? window.AIFLPromptGenerator.resolvePinAnchor(comment) : null;
+    const liveEl = anchor?.element || null;
+    const isVisibleNow = Boolean(isSameRoute && anchor && !anchor.hiddenByAncestor);
 
     const card = document.createElement('div');
-    card.className = `aifl-card${state.focusedCommentId === comment.id ? ' focused' : ''}`;
+    card.className = `aifl-card status-${pinStatus}${state.focusedCommentId === comment.id ? ' focused' : ''}`;
     card.dataset.cardId = comment.id;
 
-    let statusBadgeHtml = '';
+    let locationBadgeHtml = '';
     if (!isSameRoute) {
-      statusBadgeHtml = `<span class="aifl-status-pill other-screen" title="Dropped on ${escapeHtml(comment.screen?.routeKey || '')}">Other Screen</span>`;
+      locationBadgeHtml = `<span class="aifl-status-pill other-screen" title="Dropped on ${escapeHtml(comment.screen?.routeKey || '')}">Other Screen</span>`;
     } else if (isFree) {
-      statusBadgeHtml = `<span class="aifl-status-pill" style="background: rgba(16, 185, 129, 0.16); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.35);" title="Arbitrary coordinate pin">📍 Free Pin</span>`;
+      locationBadgeHtml = `<span class="aifl-status-pill" style="background: rgba(16, 185, 129, 0.16); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.35);" title="Arbitrary coordinate pin">📍 Free Pin</span>`;
     } else if (!isVisibleNow) {
-      statusBadgeHtml = `<span class="aifl-status-pill hidden-el" title="Target is currently hidden (e.g. inside a closed accordion, menu, or tab)">Collapsed/Hidden</span>`;
+      locationBadgeHtml = `<span class="aifl-status-pill hidden-el" title="Target is currently hidden (e.g. inside a closed accordion, menu, or tab)">Collapsed/Hidden</span>`;
+    } else if (anchor?.tier === 2) {
+      locationBadgeHtml = `<span class="aifl-status-pill other-screen" title="Re-anchored via text-quote + landmark">Text Match</span>`;
+    } else if (anchor?.tier === 3) {
+      locationBadgeHtml = `<span class="aifl-status-pill hidden-el" title="Element refactored; anchored via last coordinates">Coords Fallback</span>`;
     }
 
     const screenDisplay = comment.screen?.activeScreenLabel
@@ -1333,23 +1932,73 @@
         : `(${t.pageCoords.x}, ${t.pageCoords.y}) • ${t.viewportPct?.x ?? 0}% X, ${t.viewportPct?.y ?? 0}% Y • ${t.elementRect?.width ?? 0}×${t.elementRect?.height ?? 0}px`
       : '';
 
+    const authorName = comment.author?.name || 'Host';
+    const authorRole = comment.author?.role || 'host';
+    const authorColor = comment.author?.color || (authorRole === 'host' ? '#6366f1' : '#10b981');
+
+    let triageButtonsHtml = '';
+    if (!isGuest) {
+      if (pinStatus === 'pending') {
+        triageButtonsHtml = `<button class="aifl-triage-btn approve" data-triage="approved" title="Approve for AI agent execution">Approve</button>`;
+      } else if (pinStatus === 'approved' || pinStatus === 'in_progress') {
+        triageButtonsHtml = `<button class="aifl-triage-btn resolve" data-triage="resolved" title="Mark resolved">Resolve</button>`;
+      } else if (pinStatus === 'resolved') {
+        triageButtonsHtml = `<button class="aifl-triage-btn reopen" data-triage="pending" title="Reopen to pending">Reopen</button>`;
+      }
+    }
+
+    const replies = Array.isArray(comment.replies) ? comment.replies : [];
+    const repliesHtml = replies
+      .map((r) => {
+        const rRole = r.role || 'guest';
+        const roleLabel = rRole === 'agent' ? '🤖 Agent' : rRole === 'host' ? 'Host' : 'Guest';
+        return `
+          <div class="aifl-reply-item role-${escapeHtml(rRole)}">
+            <div class="aifl-reply-header">
+              <span class="aifl-reply-author">${escapeHtml(r.authorName || roleLabel)}</span>
+              <span class="aifl-reply-role ${escapeHtml(rRole)}">${escapeHtml(roleLabel)}</span>
+            </div>
+            <div class="aifl-reply-text">${escapeHtml(r.text)}</div>
+          </div>
+        `;
+      })
+      .join('');
+
     card.innerHTML = `
       <div class="aifl-card-header">
         <div class="aifl-card-left">
+          ${
+            !isGuest
+              ? `<input type="checkbox" class="aifl-checkbox card-select" ${state.selectedPinIds.has(comment.id) ? 'checked' : ''} title="Select pin for batch action" />`
+              : ''
+          }
           <span class="aifl-pin-badge" style="${isFree && state.focusedCommentId !== comment.id ? 'background: #059669;' : ''}">${comment.number}</span>
           <span class="aifl-screen-pill" title="${escapeHtml(screenDisplay)}">${escapeHtml(screenDisplay)}</span>
-          ${statusBadgeHtml}
         </div>
         <div class="aifl-card-actions">
           <button class="aifl-icon-btn locate" title="${isSameRoute ? 'Scroll to & highlight pin location' : 'Navigate to screen'}">
             ${isSameRoute ? '🎯 Locate' : '↗ Go'}
           </button>
           <button class="aifl-icon-btn copy-one" title="Copy prompt for just this comment">📋</button>
-          <button class="aifl-icon-btn delete" title="Delete comment">🗑</button>
+          ${editable ? '<button class="aifl-icon-btn delete" title="Delete comment">🗑</button>' : ''}
         </div>
       </div>
 
-      <textarea class="aifl-card-textarea" placeholder="Describe the change for the AI agent...">${escapeHtml(comment.text)}</textarea>
+      <div class="aifl-card-subrow">
+        <div class="aifl-card-badges">
+          <span class="aifl-status-pill status-${escapeHtml(pinStatus)}">${escapeHtml(formatStatusLabel(pinStatus))}</span>
+          <span class="aifl-author-pill" title="Author (${escapeHtml(authorRole)})">
+            <span class="aifl-peer-dot" style="background: ${escapeHtml(authorColor)};"></span>
+            <span>${escapeHtml(authorName)}</span>
+          </span>
+          ${locationBadgeHtml}
+        </div>
+        <div class="aifl-triage-actions">
+          ${triageButtonsHtml}
+        </div>
+      </div>
+
+      <textarea class="aifl-card-textarea" ${editable ? '' : 'readonly'} placeholder="Describe the change for the AI agent...">${escapeHtml(comment.text)}</textarea>
 
       <div class="aifl-meta-box">
         ${
@@ -1407,41 +2056,113 @@
             : ''
         }
       </div>
+
+      <div class="aifl-replies-section">
+        ${replies.length > 0 ? `<div class="aifl-replies-list">${repliesHtml}</div>` : ''}
+        <div class="aifl-reply-form">
+          <input type="text" class="aifl-reply-input" data-pin-id="${escapeHtml(comment.id)}" placeholder="Reply to thread..." />
+          <button type="button" class="aifl-reply-send">Send</button>
+        </div>
+      </div>
     `;
 
     // Focus card on click
     card.addEventListener('click', (e) => {
-      if (e.target.closest('button')) return;
+      if (e.target.closest('button, input, textarea')) return;
       state.focusedCommentId = comment.id;
       card.parentElement?.querySelectorAll('.aifl-card').forEach((c) => c.classList.remove('focused'));
       card.classList.add('focused');
       renderPins();
-      if (isSameRoute) {
-        if (isFree && t.pageCoords) {
-          positionCoordinateFocusRing(t.pageCoords.x - window.scrollX, t.pageCoords.y - window.scrollY);
+      if (isSameRoute && anchor && !anchor.hiddenByAncestor) {
+        if (anchor.tier === 'free') {
+          positionCoordinateFocusRing(anchor.x, anchor.y);
         } else if (liveEl && window.AIFLPromptGenerator.isElementCurrentlyVisible(liveEl)) {
           positionFocusBox(liveEl);
+        } else if (anchor.containerElement) {
+          positionFocusBox(anchor.containerElement);
         }
       }
+    });
+
+    // Multi-select checkbox
+    const checkbox = card.querySelector('.card-select');
+    if (checkbox) {
+      checkbox.addEventListener('click', (e) => e.stopPropagation());
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) state.selectedPinIds.add(comment.id);
+        else state.selectedPinIds.delete(comment.id);
+        if (ui.selectedCountEl) {
+          const checkedVisibleCount = getFilteredComments().filter((c) =>
+            state.selectedPinIds.has(c.id)
+          ).length;
+          ui.selectedCountEl.textContent = `${checkedVisibleCount} selected`;
+        }
+      });
+    }
+
+    // Host triage status buttons (Approve / Resolve / Reopen)
+    card.querySelectorAll('.aifl-triage-btn').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const nextStatus = btn.dataset.triage;
+        if (!nextStatus) return;
+        const { comments } = await window.AIFLStorage.updatePinStatus(comment.id, nextStatus);
+        state.comments = comments;
+        renderAll();
+        showToast(`Pin #${comment.number} marked ${nextStatus}`);
+      });
     });
 
     // Live edit comment text
     const textarea = card.querySelector('.aifl-card-textarea');
     let saveTimer = null;
     textarea.addEventListener('keydown', (e) => e.stopPropagation());
-    textarea.addEventListener('input', () => {
-      const newText = textarea.value;
-      comment.text = newText;
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(async () => {
-        const { comments } = await window.AIFLStorage.updateComment(comment.id, { text: newText.trim() });
-        state.comments = comments;
-        renderPins();
-        const updatedPrompt = window.AIFLPromptGenerator.generateAIPrompt(getFilteredComments(), {
-          mode: state.promptMode
-        });
-        if (ui.previewPre) ui.previewPre.textContent = updatedPrompt;
-      }, 250);
+    if (editable) {
+      textarea.addEventListener('input', () => {
+        const newText = textarea.value;
+        comment.text = newText;
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(async () => {
+          const { comments } = await window.AIFLStorage.updateComment(comment.id, { text: newText.trim() });
+          state.comments = comments;
+          renderPins();
+          const updatedPrompt = window.AIFLPromptGenerator.generateAIPrompt(getFilteredComments(), {
+            mode: state.promptMode
+          });
+          if (ui.previewPre) ui.previewPre.textContent = updatedPrompt;
+        }, 250);
+      });
+    }
+
+    // Threaded reply submission
+    const replyInput = card.querySelector('.aifl-reply-input');
+    const replySendBtn = card.querySelector('.aifl-reply-send');
+
+    const submitReply = async () => {
+      const replyText = replyInput.value.trim();
+      if (!replyText) return;
+      replyInput.value = '';
+      replyDrafts.delete(comment.id);
+      const { comments } = await window.AIFLStorage.addReply(comment.id, replyText);
+      state.comments = comments;
+      renderAll();
+    };
+
+    replyInput.addEventListener('click', (e) => e.stopPropagation());
+    replyInput.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        submitReply();
+      }
+    });
+    replyInput.addEventListener('input', () => {
+      if (replyInput.value) replyDrafts.set(comment.id, replyInput.value);
+      else replyDrafts.delete(comment.id);
+    });
+    replySendBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      submitReply();
     });
 
     // Locate / Go button
@@ -1468,24 +2189,24 @@
 
     // Delete Comment button
     const deleteBtn = card.querySelector('.aifl-icon-btn.delete');
-    deleteBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      state.comments = await window.AIFLStorage.deleteComment(comment.id);
-      elementCache.delete(comment.id);
-      if (state.focusedCommentId === comment.id) {
-        state.focusedCommentId = null;
-        ui.focusBox.classList.remove('visible');
-      }
-      renderAll();
-      showToast('Deleted comment');
-    });
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        state.comments = await window.AIFLStorage.deleteComment(comment.id);
+        elementCache.delete(comment.id);
+        state.selectedPinIds.delete(comment.id);
+        if (state.focusedCommentId === comment.id) {
+          state.focusedCommentId = null;
+          ui.focusBox.classList.remove('visible');
+        }
+        renderAll();
+        showToast('Deleted comment');
+      });
+    }
 
     return card;
   }
 
-  /**
-   * Copies generated AI prompt markdown to the user's clipboard.
-   */
   async function copyPromptToClipboard(commentsList, customMessage = null) {
     if (!commentsList || commentsList.length === 0) {
       showToast('No comments to copy yet');
@@ -1499,7 +2220,6 @@
     try {
       await navigator.clipboard.writeText(promptText);
     } catch {
-      // Fallback textarea copy
       const ta = document.createElement('textarea');
       ta.value = promptText;
       ta.style.position = 'fixed';
@@ -1519,14 +2239,11 @@
       const orig = ui.btnCopyLabel.textContent;
       ui.btnCopyLabel.textContent = '✓ Copied!';
       setTimeout(() => {
-        ui.btnCopyLabel.textContent = orig;
+        if (ui.btnCopyLabel) ui.btnCopyLabel.textContent = orig;
       }, 1800);
     }
   }
 
-  /**
-   * Exports the generated AI prompt as a downloadable `.md` file.
-   */
   function downloadPromptMarkdown(commentsList) {
     if (!commentsList || commentsList.length === 0) {
       showToast('No comments to export yet');
@@ -1557,7 +2274,7 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
       ui.toast.classList.remove('visible');
-    }, 2400);
+    }, 2600);
   }
 
   function escapeHtml(str) {
@@ -1570,17 +2287,18 @@
   }
 
   // Listen for toggle message from background service worker
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg && msg.type === 'TOGGLE_FEEDBACK_LOOP') {
-      toggleToolbar();
-      sendResponse({ ok: true });
-    }
-    return true;
-  });
+  if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg && msg.type === 'TOGGLE_FEEDBACK_LOOP') {
+        toggleToolbar();
+        sendResponse({ ok: true });
+      }
+      return true;
+    });
+  }
 
-  // Auto-restore pins (and toolbar if previously active or if pins exist and were not explicitly hidden) on page load
+  // Auto-discover live collab session and restore UI on load
   (async function initOnLoad() {
-    const existing = await window.AIFLStorage.loadComments();
     let sessionState = null;
     try {
       sessionState = sessionStorage.getItem('aifl_toolbar_open');
@@ -1588,9 +2306,33 @@
       // Ignore
     }
 
-    const shouldShow = sessionState === '1' || (existing.length > 0 && sessionState !== '0');
-    if (existing.length > 0 || shouldShow) {
+    if (isGuestMode) {
       await ensureMounted();
+      if (state.tornDown) return;
+      if (sessionState !== '0') {
+        setToolbarVisible(true);
+      }
+      renderAll();
+    }
+
+    if (window.AIFLStorage?.initLiveSession) {
+      await window.AIFLStorage.initLiveSession();
+    }
+    if (state.tornDown) return;
+
+    const existing = await window.AIFLStorage.loadComments();
+    const session = getSession();
+
+    const shouldShow =
+      isGuestMode
+        ? sessionState !== '0'
+        : sessionState === '1' ||
+          (session.connected && sessionState !== '0') ||
+          (existing.length > 0 && sessionState !== '0');
+
+    if (existing.length > 0 || shouldShow || session.connected) {
+      await ensureMounted();
+      if (state.tornDown) return;
       state.comments = existing;
       if (shouldShow) {
         setToolbarVisible(true);
@@ -1599,4 +2341,3 @@
     }
   })();
 })();
-

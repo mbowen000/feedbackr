@@ -1041,48 +1041,285 @@
     return true;
   }
 
-  /**
-   * Resolves a saved comment's target back to its live DOM element on the page,
-   * using CSS selector first and falling back to tag + text + heading matching.
-   */
-  function resolveTargetElement(comment) {
-    if (!comment || !comment.target) return null;
-    const t = comment.target;
-    if (t.isFreePin || t.pinType === 'free') return null;
+  function normalizeWhitespace(str) {
+    return String(str || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
 
-    // 1. Primary CSS selector
+  /**
+   * Parses a formatted container label like `<div#hero-banner.hero>` or a raw selector
+   * into matching DOM elements (excluding our own Shadow DOM host).
+   */
+  function queryContainerElements(containerStr) {
+    if (!containerStr || typeof containerStr !== 'string') return [];
+    let raw = containerStr.trim();
+    if (raw.startsWith('<') && raw.endsWith('>')) {
+      raw = raw.slice(1, -1).trim();
+    }
+    if (!raw || raw === 'page canvas') return [];
+
+    const tryQuery = (sel) => {
+      try {
+        return Array.from(document.querySelectorAll(sel)).filter(
+          (el) => el.id !== 'ai-feedback-loop-host' && !el.closest('#ai-feedback-loop-host')
+        );
+      } catch {
+        return [];
+      }
+    };
+
+    // First try raw directly if it already looks like a CSS selector
+    let matches = tryQuery(raw);
+    if (matches.length > 0) return matches;
+
+    // Parse tag#id.cls1.cls2 safely with CSS.escape
+    const hashIdx = raw.indexOf('#');
+    const dotIdx = raw.indexOf('.');
+    const tagEnd = Math.min(
+      hashIdx === -1 ? raw.length : hashIdx,
+      dotIdx === -1 ? raw.length : dotIdx
+    );
+    const tag = raw.slice(0, tagEnd).trim();
+    const rest = raw.slice(tagEnd);
+    let built = tag && /^[a-zA-Z0-9-]+$/.test(tag) ? tag : '';
+
+    const tokens = rest.match(/[#.][^#.]+/g) || [];
+    for (const tok of tokens) {
+      const prefix = tok[0];
+      const name = tok.slice(1).trim();
+      if (!name) continue;
+      if (prefix === '#') {
+        built = `#${CSS.escape(name)}`;
+        matches = tryQuery(built);
+        if (matches.length > 0) return matches;
+      } else {
+        built += `.${CSS.escape(name)}`;
+      }
+    }
+
+    return built ? tryQuery(built) : [];
+  }
+
+  /**
+   * Resolves a landmark or container root element from `target.landmarkRef` or `target.landmark`.
+   */
+  function resolveLandmarkContainer(t) {
+    if (!t) return null;
+    const candidates = [t.landmarkRef?.container, t.landmark, t.underlyingContainer].filter(Boolean);
+    for (const desc of candidates) {
+      const els = queryContainerElements(desc);
+      if (els.length === 1) return els[0];
+      if (els.length > 1 && t.landmarkRef?.title) {
+        const normTitle = normalizeWhitespace(t.landmarkRef.title);
+        const titled = els.find((el) =>
+          normalizeWhitespace(el.innerText || el.textContent).includes(normTitle)
+        );
+        if (titled) return titled;
+        return els[0];
+      }
+      if (els.length > 0) return els[0];
+    }
+    return null;
+  }
+
+  /**
+   * Tier 1 + Tier 2 DOM resolution returning `{ tier, element }` or `{ tier: null, element: null }`.
+   * Tier 1: Exact CSS `t.selector`, `t.id`, or `t.testId`.
+   * Tier 2: Text-Quote & Landmark match (search inside landmark container first, falling back to document).
+   */
+  function resolveTargetWithTier(comment) {
+    if (!comment || !comment.target) return { tier: null, element: null };
+    const t = comment.target;
+    if (t.isFreePin || t.pinType === 'free') return { tier: null, element: null };
+
+    const notOwnUi = (el) => el && el.id !== 'ai-feedback-loop-host' && !el.closest('#ai-feedback-loop-host');
+
+    // Tier 1a: Primary CSS selector
     if (t.selector) {
       try {
-        const matches = Array.from(document.querySelectorAll(t.selector));
-        if (matches.length === 1) return matches[0];
-        if (matches.length > 1 && t.textSnippet) {
-          const exact = matches.find((m) => extractElementText(m) === t.textSnippet);
-          if (exact) return exact;
-          return matches[0];
+        const matches = Array.from(document.querySelectorAll(t.selector)).filter(notOwnUi);
+        if (matches.length === 1) return { tier: 1, element: matches[0] };
+        if (matches.length > 1) {
+          if (t.textSnippet) {
+            const normTarget = normalizeWhitespace(t.textSnippet);
+            const exact = matches.find((m) => normalizeWhitespace(extractElementText(m)) === normTarget);
+            if (exact) return { tier: 1, element: exact };
+          }
+          return { tier: 1, element: matches[0] };
         }
       } catch {
         // Fallback below
       }
     }
 
-    // 2. Fallback by ID
+    // Tier 1b: Stable ID
     if (t.id) {
       const byId = document.getElementById(t.id);
-      if (byId) return byId;
+      if (notOwnUi(byId)) return { tier: 1, element: byId };
     }
 
-    // 3. Fallback by tagName + exact textSnippet
-    if (t.tagName && t.textSnippet) {
+    // Tier 1c: Test ID attribute (e.g. data-testid="hero-start-btn")
+    if (t.testId) {
       try {
-        const candidates = Array.from(document.getElementsByTagName(t.tagName));
-        const matched = candidates.find((c) => extractElementText(c) === t.textSnippet);
-        if (matched) return matched;
+        const attrSelector = t.tagName ? `${t.tagName}[${t.testId}]` : `[${t.testId}]`;
+        const matches = Array.from(document.querySelectorAll(attrSelector)).filter(notOwnUi);
+        if (matches.length > 0) return { tier: 1, element: matches[0] };
+        const anyTagMatches = Array.from(document.querySelectorAll(`[${t.testId}]`)).filter(notOwnUi);
+        if (anyTagMatches.length > 0) return { tier: 1, element: anyTagMatches[0] };
       } catch {
-        // Ignore
+        // Ignore invalid testId selector
       }
     }
 
-    return null;
+    // Tier 2: Text-Quote & Landmark match (case-insensitive collapsed whitespace)
+    const rawSnippet = t.textSnippet ? String(t.textSnippet).replace(/…$/, '') : '';
+    const normSnippet = normalizeWhitespace(rawSnippet);
+    const rawClicked = t.clickedPhrase ? String(t.clickedPhrase).replace(/^…|…$/g, '') : '';
+    const normClicked = normalizeWhitespace(rawClicked);
+
+    if (normSnippet || normClicked) {
+      const landmarkRoot = resolveLandmarkContainer(t);
+      const searchRoots = landmarkRoot ? [landmarkRoot, document] : [document];
+      const tagSelector = t.tagName && /^[a-zA-Z0-9-]+$/.test(t.tagName) ? t.tagName : '*';
+
+      for (const root of searchRoots) {
+        let candidates = [];
+        try {
+          candidates = Array.from(root.querySelectorAll(tagSelector)).filter(notOwnUi);
+        } catch {
+          candidates = [];
+        }
+
+        if (normSnippet) {
+          const exactMatch = candidates.find((c) => {
+            const cNorm = normalizeWhitespace(extractElementText(c));
+            if (!cNorm) return false;
+            return cNorm === normSnippet || (t.textSnippet.endsWith('…') && normSnippet.length >= 10 && cNorm.startsWith(normSnippet));
+          });
+          if (exactMatch) return { tier: 2, element: exactMatch };
+        }
+
+        if (normClicked && normClicked.length >= 4) {
+          const phraseMatch = candidates.find((c) => {
+            const cNorm = normalizeWhitespace(extractElementText(c));
+            return cNorm && cNorm.includes(normClicked);
+          });
+          if (phraseMatch) return { tier: 2, element: phraseMatch };
+        }
+      }
+    }
+
+    return { tier: null, element: null };
+  }
+
+  /**
+   * Resolves a saved comment's target back to its live DOM element on the page
+   * using Tier 1 (Selector / ID / TestId) and Tier 2 (Text-Quote & Landmark).
+   */
+  function resolveTargetElement(comment) {
+    return resolveTargetWithTier(comment).element;
+  }
+
+  /**
+   * Full 3-Tier DOM Re-Anchoring resolver returning exact viewport coordinates and tier metadata:
+   * - Tier 1: Exact CSS selector, ID, or testId
+   * - Tier 2: Text-quote + landmark container match
+   * - Tier 3: Landmark/underlying container or last anchored pageCoords fallback
+   */
+  function resolvePinAnchor(comment) {
+    if (!comment || !comment.target) {
+      return { tier: 3, element: null, containerElement: null, x: 100, y: 100, hiddenByAncestor: false };
+    }
+    const t = comment.target;
+    const scrollX = window.scrollX || window.pageXOffset || 0;
+    const scrollY = window.scrollY || window.pageYOffset || 0;
+
+    if (t.isFreePin || t.pinType === 'free') {
+      const pageX = t.pageCoords?.x ?? 100;
+      const pageY = t.pageCoords?.y ?? 100;
+      return {
+        tier: 'free',
+        element: null,
+        containerElement: resolveLandmarkContainer(t),
+        x: pageX - scrollX,
+        y: pageY - scrollY,
+        hiddenByAncestor: false
+      };
+    }
+
+    const { tier, element } = resolveTargetWithTier(comment);
+    if (element) {
+      if (!isElementCurrentlyVisible(element)) {
+        return {
+          tier,
+          element,
+          containerElement: null,
+          x: null,
+          y: null,
+          hiddenByAncestor: true
+        };
+      }
+      const rect = element.getBoundingClientRect();
+      const ratioX = t.offsetRatio?.x ?? 0.5;
+      const ratioY = t.offsetRatio?.y ?? 0.5;
+      const customDx = t.pinOffset?.dx ?? 0;
+      const customDy = t.pinOffset?.dy ?? 0;
+      return {
+        tier,
+        element,
+        containerElement: null,
+        x: rect.left + rect.width * ratioX + customDx,
+        y: rect.top + rect.height * ratioY + customDy,
+        hiddenByAncestor: false
+      };
+    }
+
+    // If target belonged to a collapsible/conditional interactive ancestor that is currently closed, stay hidden
+    const hasInteractiveAncestors =
+      Array.isArray(t.interactiveAncestors) && t.interactiveAncestors.length > 0;
+    if (hasInteractiveAncestors) {
+      return {
+        tier: 3,
+        element: null,
+        containerElement: null,
+        x: null,
+        y: null,
+        hiddenByAncestor: true
+      };
+    }
+
+    // Tier 3: Container fallback / last anchored pageCoords so refactored pins remain visible
+    const containerElement = resolveLandmarkContainer(t);
+    if (t.pageCoords && Number.isFinite(t.pageCoords.x) && Number.isFinite(t.pageCoords.y)) {
+      return {
+        tier: 3,
+        element: null,
+        containerElement: containerElement && isElementCurrentlyVisible(containerElement) ? containerElement : null,
+        x: t.pageCoords.x - scrollX,
+        y: t.pageCoords.y - scrollY,
+        hiddenByAncestor: false
+      };
+    }
+
+    if (containerElement && isElementCurrentlyVisible(containerElement)) {
+      const rect = containerElement.getBoundingClientRect();
+      return {
+        tier: 3,
+        element: null,
+        containerElement,
+        x: rect.left + rect.width * (t.offsetRatio?.x ?? 0.5),
+        y: rect.top + rect.height * (t.offsetRatio?.y ?? 0.5),
+        hiddenByAncestor: false
+      };
+    }
+
+    return {
+      tier: 3,
+      element: null,
+      containerElement: null,
+      x: 100 - scrollX,
+      y: 100 - scrollY,
+      hiddenByAncestor: false
+    };
   }
 
   /**
@@ -1183,8 +1420,11 @@
         const commentText = item.text || '(No comment text provided)';
         const isFree = Boolean(t.isFreePin || t.pinType === 'free');
         const lmBadge = t.landmarkRef?.id ? ` (Ref: [${t.landmarkRef.id}] \`${t.landmarkRef.container}\`)` : '';
+        const statusTag = item.status ? `[${String(item.status).toUpperCase()}] ` : '';
+        const authorObj = item.author || { name: 'Host', role: 'host' };
 
-        lines.push(`### Pin #${item.number}${lmBadge}: ${commentText}`);
+        lines.push(`### Pin #${item.number} ${statusTag}${lmBadge}: ${commentText}`);
+        lines.push(`- **Author**: ${authorObj.name} (${authorObj.role}) • **Pin ID**: \`${item.id}\``);
 
         // Natural-language placement narrative
         if (t.placementNarrative) {
@@ -1253,6 +1493,13 @@
           }
         }
 
+        if (Array.isArray(item.replies) && item.replies.length > 0) {
+          lines.push('- **Discussion Thread**:');
+          for (const r of item.replies) {
+            lines.push(`  - **${r.authorName}** (${r.role}): ${r.text}`);
+          }
+        }
+
         lines.push('');
       }
     }
@@ -1272,7 +1519,9 @@
     describeViewportRegion,
     findSpatialLandmarks,
     isElementCurrentlyVisible,
+    resolveTargetWithTier,
     resolveTargetElement,
+    resolvePinAnchor,
     tryRevealTargetElement,
     generateAIPrompt
   };
