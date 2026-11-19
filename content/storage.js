@@ -239,9 +239,20 @@
     peers: [],
     serverUrl: '',
     hostToken: '',
+    defaultAgent: 'agy',
+    workspaceRoot: '',
+    agentRunning: false,
+    availableProviders: [
+      { id: 'agy', label: 'Antigravity CLI (agy)' },
+      { id: 'gemini', label: 'Gemini CLI' },
+      { id: 'codex', label: 'Codex CLI (OpenAI)' },
+      { id: 'claude', label: 'Claude Code CLI (Anthropic)' }
+    ],
     lastError: null,
     manualDisconnect: false
   };
+
+  const agentListeners = new Set();
 
   let livePins = [];
   let memoryPins = [];
@@ -576,6 +587,30 @@
             emitPeers(session.peers, msg);
             break;
           }
+          case 'agent_run_started': {
+            session.agentRunning = true;
+            emitStateChange();
+            agentListeners.forEach((fn) => {
+              try {
+                fn(msg);
+              } catch {
+                // Ignore listener errors
+              }
+            });
+            break;
+          }
+          case 'agent_run_finished': {
+            session.agentRunning = false;
+            emitStateChange();
+            agentListeners.forEach((fn) => {
+              try {
+                fn(msg);
+              } catch {
+                // Ignore listener errors
+              }
+            });
+            break;
+          }
           case 'error': {
             emitError(msg);
             break;
@@ -665,6 +700,14 @@
 
       const hostRes = await fetchJsonWithTimeout(`${foundServerBase}/__collab/host-session`, {}, 1000);
       if (hostRes.ok && hostRes.data?.ok === true && hostRes.data?.hostToken) {
+        if (hostRes.data.agent) {
+          session.defaultAgent = hostRes.data.agent.activeProvider || 'agy';
+          session.workspaceRoot = hostRes.data.agent.workspaceRoot || '';
+          session.agentRunning = Boolean(hostRes.data.agent.running);
+          if (Array.isArray(hostRes.data.agent.availableProviders)) {
+            session.availableProviders = hostRes.data.agent.availableProviders;
+          }
+        }
         const hostIdentity = getHostIdentity();
         return connectLiveSession({
           serverUrl: foundServerBase,
@@ -1033,6 +1076,25 @@
     return () => stateListeners.delete(fn);
   }
 
+  function onAgentEvent(fn) {
+    if (typeof fn !== 'function') return () => {};
+    agentListeners.add(fn);
+    return () => agentListeners.delete(fn);
+  }
+
+  function runAgent(pinIds, provider = null) {
+    if (!session.connected || session.role !== 'host') {
+      return { ok: false, error: 'Host live session required to run headless CLI agent' };
+    }
+    const chosen = provider || session.defaultAgent || 'agy';
+    const sent = sendWs({
+      type: 'agent_run',
+      pinIds: Array.isArray(pinIds) ? pinIds : [],
+      provider: chosen
+    });
+    return { ok: sent, provider: chosen };
+  }
+
   window.AIFLStorage = {
     VALID_STATUSES,
     VALID_ROLES,
@@ -1057,10 +1119,12 @@
     addReply,
     updatePinStatus,
     batchUpdateStatus,
+    runAgent,
     onSyncUpdate,
     onPeersUpdate,
     onSessionError,
     onSessionStateChange,
+    onAgentEvent,
     getYDoc: ensureYDoc
   };
 })();

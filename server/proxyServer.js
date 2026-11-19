@@ -59,7 +59,10 @@ function createProxyServer(options = {}) {
     sessionPassphrase: options.sessionPassphrase,
     targetUrl,
     collabPort: requestedPort,
-    runtimeFile: options.runtimeFile
+    runtimeFile: options.runtimeFile,
+    workspaceRoot: options.workspaceRoot,
+    defaultAgent: options.defaultAgent,
+    spawnImpl: options.spawnImpl
   });
 
   const proxy = httpProxy.createProxyServer({

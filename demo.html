@@ -119,6 +119,34 @@
       border-radius: 16px;
       padding: 36px;
       margin-bottom: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .hero-content {
+      flex: 1;
+      min-width: 0;
+    }
+    .hero-eagle {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .hero-eagle svg {
+      width: 160px;
+      height: auto;
+      filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.35));
+    }
+    @media (max-width: 680px) {
+      .hero {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .hero-eagle {
+        align-self: center;
+      }
     }
     .hero h1 {
       margin: 0 0 10px;
@@ -141,6 +169,10 @@
       border-radius: 8px;
       font-weight: 600;
       cursor: pointer;
+    }
+    button[data-testid="hero-start-btn"] {
+      background: #22c55e;
+      color: #0b1120;
     }
     .btn-secondary {
       background: transparent;
@@ -211,13 +243,67 @@
     <!-- Screen 1: Overview -->
     <section class="screen-view active" id="screen-overview" data-screen="Overview Slide">
       <div class="hero" id="hero-banner">
-        <h1>Ship UI fixes 10× faster with AI Feedback Loop</h1>
-        <p class="hero-subtitle">
-          Try pressing Alt+Shift+F (or clicking the extension icon), click "+ Add Comment", and drop a pin right on this tiny subtitle to tell your AI agent to bump its font size to 18px!
-        </p>
-        <div class="cta-group">
-          <button class="btn-primary" data-testid="hero-start-btn">Start Free Trial</button>
-          <button class="btn-secondary" data-testid="hero-demo-btn">Book a Demo</button>
+        <div class="hero-content">
+          <h1>Ship UI fixes 10× faster with AI Feedback Loop</h1>
+          <p class="hero-subtitle">
+            Try pressing Alt+Shift+F (or clicking the extension icon), click "+ Add Comment", and drop a pin right on this tiny subtitle to tell your AI agent to bump its font size to 18px!
+          </p>
+          <div class="cta-group">
+            <button class="btn-primary" data-testid="hero-start-btn">Start Free Trial</button>
+            <button class="btn-secondary" data-testid="hero-demo-btn">Book a Demo</button>
+          </div>
+        </div>
+        <div class="hero-eagle" aria-label="Cartoon bald eagle">
+          <svg viewBox="0 0 180 156" role="img" aria-label="Cartoon bald eagle" xmlns="http://www.w3.org/2000/svg">
+            <!-- Tail feathers -->
+            <path d="M76 124 L69 144 Q90 152 111 144 L104 124 Z" fill="#f1f5f9" stroke="#2c1810" stroke-width="2.5" stroke-linejoin="round" />
+            <path d="M84 128 L82 146 M96 128 L98 146" stroke="#cbd5e1" stroke-width="1.8" stroke-linecap="round" />
+
+            <!-- Left wing -->
+            <path d="M68 84 Q42 50 16 44 Q14 54 32 64 Q16 66 20 76 Q26 82 40 80 Q28 88 34 96 Q44 100 68 106 Z" fill="#5c381f" stroke="#2c1810" stroke-width="2.5" stroke-linejoin="round" />
+            <path d="M64 88 Q44 62 24 52 Q36 64 56 84 Z" fill="#7c4d2b" opacity="0.7" />
+
+            <!-- Right wing -->
+            <path d="M112 84 Q138 50 164 44 Q166 54 148 64 Q164 66 160 76 Q154 82 140 80 Q152 88 146 96 Q136 100 112 106 Z" fill="#5c381f" stroke="#2c1810" stroke-width="2.5" stroke-linejoin="round" />
+            <path d="M116 88 Q136 62 156 52 Q144 64 124 84 Z" fill="#7c4d2b" opacity="0.7" />
+
+            <!-- Talons / feet (outline + fill) -->
+            <g stroke="#2c1810" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+              <path d="M77 125 L77 134 M77 133 L69 138 M77 133 L77 141 M77 133 L84 138" />
+              <path d="M103 125 L103 134 M103 133 L96 138 M103 133 L103 141 M103 133 L111 138" />
+            </g>
+            <g stroke="#f59e0b" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+              <path d="M77 125 L77 134 M77 133 L69 138 M77 133 L77 141 M77 133 L84 138" />
+              <path d="M103 125 L103 134 M103 133 L96 138 M103 133 L103 141 M103 133 L111 138" />
+            </g>
+
+            <!-- Body -->
+            <ellipse cx="90" cy="102" rx="27" ry="29" fill="#5c381f" stroke="#2c1810" stroke-width="2.5" />
+            <ellipse cx="90" cy="107" rx="18" ry="19" fill="#73482a" opacity="0.65" />
+
+            <!-- White bald eagle head & scalloped collar -->
+            <path d="M66 76 L66 54 C66 36 77 28 88 29 Q91 20 97 27 Q103 22 103 31 C111 35 114 44 114 54 L114 76 Q109 86 101 80 Q95 90 90 82 Q85 90 79 80 Q71 86 66 76 Z" fill="#f8fafc" stroke="#2c1810" stroke-width="2.5" stroke-linejoin="round" />
+
+            <!-- Eyes -->
+            <ellipse cx="79" cy="54" rx="7" ry="8" fill="#ffffff" stroke="#1e293b" stroke-width="2" />
+            <circle cx="80.5" cy="54.5" r="4.2" fill="#0f172a" />
+            <circle cx="82" cy="52.5" r="1.6" fill="#ffffff" />
+
+            <ellipse cx="101" cy="54" rx="7" ry="8" fill="#ffffff" stroke="#1e293b" stroke-width="2" />
+            <circle cx="99.5" cy="54.5" r="4.2" fill="#0f172a" />
+            <circle cx="101" cy="52.5" r="1.6" fill="#ffffff" />
+
+            <!-- Expressive cartoon brows -->
+            <path d="M70 45 Q78 43 86 48" fill="none" stroke="#1e293b" stroke-width="2.8" stroke-linecap="round" />
+            <path d="M110 45 Q102 43 94 48" fill="none" stroke="#1e293b" stroke-width="2.8" stroke-linecap="round" />
+
+            <!-- Hooked golden beak -->
+            <path d="M80 61 C80 54 100 54 100 61 C100 68 95 74 90 77 C85 74 80 68 80 61 Z" fill="#f59e0b" stroke="#2c1810" stroke-width="2.2" stroke-linejoin="round" />
+            <path d="M85 59 Q90 57 95 59" fill="none" stroke="#fde68a" stroke-width="2" stroke-linecap="round" />
+            <path d="M82 64 Q90 68 98 64" fill="none" stroke="#92400e" stroke-width="1.6" stroke-linecap="round" />
+            <circle cx="87" cy="61" r="1" fill="#92400e" />
+            <circle cx="93" cy="61" r="1" fill="#92400e" />
+          </svg>
         </div>
       </div>
 
@@ -228,11 +314,11 @@
         </article>
         <article class="card" id="card-screens">
           <h3>Multi-Screen Memory</h3>
-          <p>Switch to "2. Pricing" or "3. Interactive FAQ" above and drop pins across multiple screens.</p>
+          <p>Bald eagles can spot prey from up to two miles away and build the largest nests of any North American bird.</p>
         </article>
         <article class="card" id="card-export">
           <h3>One-Click AI Prompt</h3>
-          <p>Open the right-hand drawer to review all pins and copy a structured Markdown prompt.</p>
+          <p>The world's first motorcycle, the 1885 Daimler Reitwagen, had a wooden frame, two small outrigger wheels, and a top speed of just 7 mph.</p>
         </article>
       </div>
     </section>

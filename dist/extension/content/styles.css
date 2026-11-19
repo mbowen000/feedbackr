@@ -21,6 +21,12 @@
   pointer-events: none;
   z-index: 2147483640;
   overflow: visible;
+  font-family: "Inter", "Segoe UI Variable Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: #f8fafc;
+  line-height: 1.45;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Hover Inspector Box when in Add Comment Mode */
@@ -1330,6 +1336,24 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aifl-agent-select {
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 7px;
+  border-radius: 7px;
+  outline: none;
+  cursor: pointer;
+}
+
+.aifl-agent-select:focus {
+  border-color: #6366f1;
 }
 
 .aifl-btn-sm {

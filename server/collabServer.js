@@ -12,6 +12,7 @@ const {
   PEER_COLORS,
   normalizeAuthor
 } = require('../shared/schema');
+const { createAgentRunner } = require('./agentRunner');
 
 const DEFAULT_RUNTIME_FILE = path.join(process.cwd(), '.aifl-session', 'runtime.json');
 const LOOPBACK_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -120,9 +121,19 @@ class CollabServer {
     this.collabPort = options.collabPort ?? DEFAULT_COLLAB_PORT;
     this.runtimeFile = options.runtimeFile || process.env.AIFL_RUNTIME_FILE || DEFAULT_RUNTIME_FILE;
     this.repoRoot = path.resolve(__dirname, '..');
+    this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
+    this.defaultAgent = options.defaultAgent || 'agy';
 
     this.clients = new Map();
     this._colorSeq = 0;
+
+    this.agentRunner = createAgentRunner({
+      store: this.store,
+      workspaceRoot: this.workspaceRoot,
+      defaultProvider: this.defaultAgent,
+      onEvent: (payload) => this.broadcastJson(payload),
+      spawnImpl: options.spawnImpl
+    });
 
     this.awareness = new awarenessProtocol.Awareness(this.store.ydoc);
     this.awareness.setLocalState(null);
@@ -509,6 +520,26 @@ class CollabServer {
           });
           break;
         }
+        case 'agent_run': {
+          if (role !== 'host') {
+            const err = new Error('Host authority required to run headless CLI agent');
+            err.statusCode = 403;
+            throw err;
+          }
+          Promise.resolve(
+            this.agentRunner.run({
+              pinIds: Array.isArray(msg.pinIds) ? msg.pinIds : undefined,
+              provider: msg.provider
+            })
+          ).catch((err) => {
+            this.sendJsonWs(ws, {
+              type: 'error',
+              code: err.statusCode || 400,
+              message: err.message || 'Agent run failed'
+            });
+          });
+          break;
+        }
         default: {
           this.sendJsonWs(ws, {
             type: 'error',
@@ -632,7 +663,8 @@ class CollabServer {
           ok: true,
           role: 'host',
           hostToken: this.hostToken,
-          sessionPassphrase: this.sessionPassphrase
+          sessionPassphrase: this.sessionPassphrase,
+          agent: this.agentRunner.getStatus()
         },
         headers
       );
@@ -708,7 +740,34 @@ class CollabServer {
           ok: true,
           targetUrl: this.targetUrl,
           collabPort: this.collabPort,
+          workspaceRoot: this.workspaceRoot,
+          agent: this.agentRunner.getStatus(),
           counts: this.store.getCounts()
+        });
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/__collab/mcp/agent-status') {
+        sendJson(res, 200, {
+          ok: true,
+          ...this.agentRunner.getStatus()
+        });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/__collab/mcp/run-agent') {
+        const body = await readJsonBody(req);
+        const started = await this.agentRunner.run({
+          pinIds: Array.isArray(body.pinIds) ? body.pinIds : undefined,
+          provider: body.provider
+        });
+        sendJson(res, 202, {
+          ok: true,
+          runId: started.runId,
+          provider: started.provider,
+          label: started.label,
+          workspaceRoot: started.workspaceRoot,
+          pinIds: started.pinIds
         });
         return;
       }

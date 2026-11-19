@@ -40,6 +40,8 @@ function parseArgs(argv = process.argv.slice(2)) {
     port: DEFAULT_COLLAB_PORT,
     target: `http://127.0.0.1:${DEFAULT_TARGET_PORT}`,
     passphrase: undefined,
+    workspace: process.cwd(),
+    agent: 'agy',
     noTunnel: false,
     help: false
   };
@@ -62,6 +64,20 @@ function parseArgs(argv = process.argv.slice(2)) {
       opts.passphrase = argv[++i];
     } else if (arg.startsWith('--passphrase=')) {
       opts.passphrase = arg.slice('--passphrase='.length);
+    } else if ((arg === '--workspace' || arg === '--project' || arg === '--dir' || arg === '--cwd') && argv[i + 1]) {
+      opts.workspace = path.resolve(argv[++i]);
+    } else if (arg.startsWith('--workspace=')) {
+      opts.workspace = path.resolve(arg.slice('--workspace='.length));
+    } else if (arg.startsWith('--project=')) {
+      opts.workspace = path.resolve(arg.slice('--project='.length));
+    } else if (arg.startsWith('--dir=')) {
+      opts.workspace = path.resolve(arg.slice('--dir='.length));
+    } else if (arg.startsWith('--cwd=')) {
+      opts.workspace = path.resolve(arg.slice('--cwd='.length));
+    } else if (arg === '--agent' && argv[i + 1]) {
+      opts.agent = argv[++i];
+    } else if (arg.startsWith('--agent=')) {
+      opts.agent = arg.slice('--agent='.length);
     }
   }
 
@@ -324,6 +340,8 @@ function printBanner({
   guestUrl,
   tunnelError,
   passphrase,
+  workspaceRoot,
+  defaultAgent,
   runtimeFile,
   dbPath
 }) {
@@ -334,6 +352,8 @@ function printBanner({
     '====================================================================',
     `  Host URL       : ${hostUrl}  (or ${loopbackUrl})`,
     `  Target App     : ${targetUrl} ${startedBuiltinTarget ? '(built-in demo.html + live reload)' : '(external dev server)'}`,
+    `  Workspace      : ${workspaceRoot}`,
+    `  CLI Agent      : ${defaultAgent} (headless: agy | gemini | codex | claude)`,
     `  Guest URL      : ${guestUrl || 'Local-only (no public tunnel)'}`,
     `  Passphrase     : ${passphrase}  (Basic Auth password; any username)`,
     `  MCP Command    : npm run mcp`,
@@ -377,7 +397,9 @@ async function startLauncher(cliOptions = {}) {
   const proxyServer = createProxyServer({
     targetUrl: effectiveTargetUrl,
     collabPort: opts.port,
-    sessionPassphrase: opts.passphrase
+    sessionPassphrase: opts.passphrase,
+    workspaceRoot: opts.workspace,
+    defaultAgent: opts.agent
   });
 
   const info = await proxyServer.start();
@@ -407,6 +429,8 @@ async function startLauncher(cliOptions = {}) {
     guestUrl: tunnelUrl,
     tunnelError,
     passphrase: info.sessionPassphrase,
+    workspaceRoot: info.collabServer.workspaceRoot,
+    defaultAgent: info.collabServer.defaultAgent,
     runtimeFile: info.runtimeFile,
     dbPath: info.dbPath
   });
@@ -441,6 +465,8 @@ async function main() {
       'Options:',
       `  --port <port>          Collab proxy port (default: ${DEFAULT_COLLAB_PORT})`,
       `  --target <url>         Target dev server URL (default: http://127.0.0.1:${DEFAULT_TARGET_PORT})`,
+      '  --project <path>       Target project workspace root (default: current directory)',
+      '  --agent <provider>     Default headless CLI: agy | gemini | codex | claude (default: agy)',
       '  --passphrase <secret>  Custom guest Basic Auth passphrase',
       '  --no-tunnel            Skip Cloudflare Quick Tunnel (local-only mode)',
       '  -h, --help             Show this help message'

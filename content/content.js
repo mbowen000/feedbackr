@@ -349,6 +349,12 @@
             <span id="aifl-selected-count" style="font-size: 11px; color: #94a3b8;">0 selected</span>
           </div>
           <div class="aifl-batch-actions">
+            <select class="aifl-agent-select" id="aifl-agent-select" title="Headless CLI agent provider">
+              <option value="agy">Antigravity (agy)</option>
+              <option value="gemini">Gemini CLI</option>
+              <option value="codex">Codex CLI</option>
+              <option value="claude">Claude CLI</option>
+            </select>
             <button class="aifl-btn aifl-btn-sm" id="aifl-batch-copy">Copy Selected</button>
             <button class="aifl-btn aifl-btn-primary aifl-btn-sm" id="aifl-batch-run">Run Agent on Selected</button>
           </div>
@@ -447,6 +453,7 @@
       batchBar: shadowRoot.getElementById('aifl-batch-bar'),
       selectPendingBtn: shadowRoot.getElementById('aifl-select-pending'),
       selectedCountEl: shadowRoot.getElementById('aifl-selected-count'),
+      agentSelect: shadowRoot.getElementById('aifl-agent-select'),
       batchCopyBtn: shadowRoot.getElementById('aifl-batch-copy'),
       batchRunBtn: shadowRoot.getElementById('aifl-batch-run'),
       drawerBody: shadowRoot.getElementById('aifl-drawer-body'),
@@ -656,6 +663,12 @@
 
     ui.batchRunBtn.addEventListener('click', handleRunAgentOnSelected);
 
+    if (ui.agentSelect) {
+      ui.agentSelect.addEventListener('change', () => {
+        ui.agentSelect.dataset.userChanged = '1';
+      });
+    }
+
     ui.drawerCopy.addEventListener('click', () => {
       copyPromptToClipboard(getFilteredComments());
     });
@@ -777,7 +790,23 @@
           if (state.drawerOpen) {
             renderDrawer();
           }
-        })
+        }),
+        window.AIFLStorage.onAgentEvent
+          ? window.AIFLStorage.onAgentEvent((evt) => {
+              if (evt.type === 'agent_run_started') {
+                showToast(`Running ${evt.label || evt.provider} on ${evt.pinIds?.length || 0} pin(s)...`);
+              } else if (evt.type === 'agent_run_finished') {
+                if (evt.ok) {
+                  showToast(`✓ ${evt.label || evt.provider} resolved ${evt.pinIds?.length || 0} pin(s)`);
+                } else {
+                  showToast(evt.error || `${evt.label || evt.provider} failed`);
+                }
+              }
+              if (state.drawerOpen) {
+                renderDrawer();
+              }
+            })
+          : () => {}
       );
     }
   }
@@ -973,12 +1002,22 @@
     ids.forEach((id) => state.selectedPinIds.delete(id));
 
     const updatedTargets = state.comments.filter((c) => ids.includes(c.id));
-    const msg =
-      session.connected && session.role === 'host'
-        ? `Approved ${ids.length} pin${ids.length === 1 ? '' : 's'} for MCP & copied prompt!`
-        : `Marked ${ids.length} pin${ids.length === 1 ? '' : 's'} approved & copied prompt!`;
+    const provider = ui.agentSelect ? ui.agentSelect.value : session.defaultAgent || 'agy';
 
-    await copyPromptToClipboard(updatedTargets, msg);
+    if (session.connected && session.role === 'host' && window.AIFLStorage.runAgent) {
+      const runRes = window.AIFLStorage.runAgent(ids, provider);
+      await copyPromptToClipboard(
+        updatedTargets,
+        runRes.ok
+          ? `Approved ${ids.length} pin${ids.length === 1 ? '' : 's'} — starting ${provider} CLI & copied prompt`
+          : runRes.error || `Approved ${ids.length} pin(s) & copied prompt`
+      );
+    } else {
+      await copyPromptToClipboard(
+        updatedTargets,
+        `Marked ${ids.length} pin${ids.length === 1 ? '' : 's'} approved & copied prompt!`
+      );
+    }
     renderAll();
   }
 
@@ -1811,6 +1850,13 @@
     }
     if (ui.batchBar) {
       ui.batchBar.classList.toggle('hidden', isGuest);
+    }
+    if (ui.agentSelect && !ui.agentSelect.dataset.userChanged && session.defaultAgent) {
+      ui.agentSelect.value = session.defaultAgent;
+    }
+    if (ui.batchRunBtn) {
+      ui.batchRunBtn.disabled = Boolean(session.agentRunning);
+      ui.batchRunBtn.textContent = session.agentRunning ? 'Running CLI...' : 'Run Agent on Selected';
     }
 
     // Preserve active focus and draft reply input values across live WS re-renders
